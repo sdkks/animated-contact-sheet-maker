@@ -1,0 +1,245 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            tauri-args: --target universal-apple-darwin
+            cli-name: macos-universal
+            cli-lipo: "true"
+          - os: windows-latest
+            rust-targets: x86_64-pc-windows-msvc
+            tauri-args: ""
+            cli-name: windows-x86_64
+            cli-target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            rust-targets: aarch64-pc-windows-msvc
+            tauri-args: --target aarch64-pc-windows-msvc
+            cli-name: windows-aarch64
+            cli-target: aarch64-pc-windows-msvc
+          - os: ubuntu-22.04
+            rust-targets: x86_64-unknown-linux-gnu
+            tauri-args: ""
+            cli-name: linux-x86_64
+            cli-target: x86_64-unknown-linux-gnu
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: cargo-release-${{ matrix.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: cargo-release-${{ matrix.os }}-
+
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Import Apple Developer certificate (macOS only)
+        if: matrix.os == 'macos-latest'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import $RUNNER_TEMP/certificate.p12 -k build.keychain \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          security find-identity -v -p codesigning build.keychain
+          rm $RUNNER_TEMP/certificate.p12
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS code signing + notarization (only used on macos-latest runner)
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          # Tauri updater signing (all platforms)
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Mosaic ${{ github.ref_name }}"
+          releaseBody: |
+            ## What's New
+
+            v0.1.8 is a small bug-fix release: Mosaic now handles video files that have no container timestamps, instead of rejecting them with "missing duration".
+
+            ### Fixed
+
+            - **`mosaic-cli probe` and the queue no longer fail with "missing duration"** on files whose container reports no length. Mosaic now falls back to the video stream's own duration, then MediaInfo's, then the frame count divided by the frame rate. `mosaic-cli probe` output has a new `duration_source` field (`container`, `stream`, `mediainfo` or `frame_count`) saying which one was used.
+
+            - **Files with no timestamps at all get a clear error instead of a wrong sheet.** A bare video stream with no container (sometimes misnamed `.wmv` or `.avi`) only has an estimated duration, and ffmpeg can't seek in it — every thumbnail would be the same frame. Sheets, screenshots, preview reels and animated sheets now refuse such a file and say to remux it first, e.g. `ffmpeg -i <file> -c copy out.mkv`.
+
+            ### Requirements
+
+            **[ffmpeg](https://ffmpeg.org/) and [MediaInfo CLI](https://mediaarea.net/en/MediaInfo) must both be installed separately.** The app and the CLI check for `ffmpeg`, `ffprobe`, and `mediainfo` on your `PATH` at startup. Install via `brew install ffmpeg-full mediainfo` (macOS), `winget install Gyan.FFmpeg MediaArea.MediaInfo` (Windows), or `apt install ffmpeg mediainfo` (Linux).
+
+            **Upgrading from v0.1.7?** Auto-update handles the GUI. For the CLI, re-run the install one-liner:
+
+            ```sh
+            # macOS / Linux
+            curl -LsSf https://mosaicvideo.github.io/install.sh | sh
+
+            # Windows (PowerShell)
+            irm https://mosaicvideo.github.io/install.ps1 | iex
+            ```
+
+            **Upgrading from v0.1.1 or earlier?** Download the GUI manually — the auto-updater shipped in v0.1.2, so older versions have no way to know this release exists.
+
+            ### Notes
+
+            **Windows:** GUI and CLI builds are not yet code-signed. SmartScreen may warn on first install and on each update — click "More info" -> "Run anyway". The macOS CLI binary **is** signed with the same Developer ID as the GUI and notarized, so Gatekeeper accepts it on first run.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.tauri-args }}
+
+      - name: Build mosaic-cli (lipo universal, macOS only)
+        if: matrix.cli-lipo == 'true'
+        working-directory: mosaic-cli
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create -output target/universal-apple-darwin/release/mosaic-cli \
+            target/aarch64-apple-darwin/release/mosaic-cli \
+            target/x86_64-apple-darwin/release/mosaic-cli
+          strip target/universal-apple-darwin/release/mosaic-cli
+
+      - name: Build mosaic-cli (single target)
+        if: matrix.cli-lipo != 'true'
+        working-directory: mosaic-cli
+        run: cargo build --release --target ${{ matrix.cli-target }}
+
+      - name: Codesign + notarize mosaic-cli (macOS)
+        if: matrix.cli-lipo == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          bin="mosaic-cli/target/universal-apple-darwin/release/mosaic-cli"
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" "$bin"
+          codesign --verify --verbose "$bin"
+          # Notarize via zip — notarytool requires a container, not a raw Mach-O.
+          ditto -c -k --keepParent "$bin" mosaic-cli-notarize.zip
+          xcrun notarytool submit mosaic-cli-notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          rm mosaic-cli-notarize.zip
+
+      - name: Strip CLI (Linux)
+        if: matrix.os == 'ubuntu-22.04'
+        run: strip mosaic-cli/target/${{ matrix.cli-target }}/release/mosaic-cli
+
+      - name: Prepare CLI artifact
+        shell: bash
+        run: |
+          if [ "${{ matrix.cli-lipo }}" = "true" ]; then
+            src="mosaic-cli/target/universal-apple-darwin/release/mosaic-cli"
+            ext=""
+          elif [[ "${{ matrix.os }}" == windows* ]]; then
+            src="mosaic-cli/target/${{ matrix.cli-target }}/release/mosaic-cli.exe"
+            ext=".exe"
+          else
+            src="mosaic-cli/target/${{ matrix.cli-target }}/release/mosaic-cli"
+            ext=""
+          fi
+          dst="mosaic-cli-${{ matrix.cli-name }}${ext}"
+          cp "$src" "$dst"
+          echo "CLI_ARTIFACT=$dst" >> "$GITHUB_ENV"
+
+      - name: Checksum CLI artifact
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            sha=$(certutil -hashfile "$CLI_ARTIFACT" SHA256 | sed -n '2p' | tr -d ' \r' | tr 'A-Z' 'a-z')
+            printf '%s  %s\n' "$sha" "$CLI_ARTIFACT" > "${CLI_ARTIFACT}.sha256"
+          else
+            shasum -a 256 "$CLI_ARTIFACT" > "${CLI_ARTIFACT}.sha256"
+          fi
+          cat "${CLI_ARTIFACT}.sha256"
+
+      - name: Upload CLI to release draft
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            ${{ env.CLI_ARTIFACT }}
+            ${{ env.CLI_ARTIFACT }}.sha256
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          fail_on_unmatched_files: true
+
+  finalize:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download per-artifact checksums from draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p checksums
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'mosaic-cli-*.sha256' \
+            --dir checksums
+          sort checksums/*.sha256 > SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+
+      - name: Upload SHA256SUMS to draft release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: SHA256SUMS
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          fail_on_unmatched_files: true

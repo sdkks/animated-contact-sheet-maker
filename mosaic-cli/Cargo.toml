@@ -1,0 +1,28 @@
+[package]
+name = "mosaic-cli"
+version = "0.1.8"
+edition = "2024"
+description = "Command-line interface for Mosaic — video contact sheets, screenshots, animated previews, and probe metadata"
+authors = ["Mosaic contributors"]
+license = "MIT"
+repository = "https://github.com/mosaicvideo/mosaic"
+
+[[bin]]
+name = "mosaic-cli"
+path = "src/main.rs"
+
+[dependencies]
+mosaic = { path = "../src-tauri", features = ["cli"] }
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+clap_mangen = "0.3"
+indicatif = "0.18"
+toml = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "io-util", "sync", "rt-multi-thread", "macros", "signal"] }
+tempfile = "3"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"

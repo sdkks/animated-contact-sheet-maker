@@ -1,0 +1,99 @@
+#!/usr/bin/env node
+
+import { readFileSync, writeFileSync } from "node:fs";
+import { resolve, dirname, relative } from "node:path";
+import { fileURLToPath } from "node:url";
+import { execSync, execFileSync } from "node:child_process";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const root = resolve(__dirname, "..");
+
+const PACKAGE_JSON = resolve(root, "package.json");
+const TAURI_CONF = resolve(root, "src-tauri/tauri.conf.json");
+const CARGO_TOML = resolve(root, "src-tauri/Cargo.toml");
+const CARGO_LOCK = resolve(root, "src-tauri/Cargo.lock");
+const CLI_CARGO_TOML = resolve(root, "mosaic-cli/Cargo.toml");
+const CLI_CARGO_LOCK = resolve(root, "mosaic-cli/Cargo.lock");
+const SRC_INDEX = resolve(root, "src/index.html");
+
+function bumpCargoToml(path, version) {
+  let cargo = readFileSync(path, "utf8");
+  const pkgIdx = cargo.indexOf("[package]");
+  const nextSection = cargo.indexOf("\n[", pkgIdx + 1);
+  const pkgSection = cargo.substring(pkgIdx, nextSection === -1 ? undefined : nextSection);
+  const updatedSection = pkgSection.replace(/^version = ".*"$/m, `version = "${version}"`);
+  cargo = cargo.substring(0, pkgIdx) + updatedSection + (nextSection === -1 ? "" : cargo.substring(nextSection));
+  writeFileSync(path, cargo);
+}
+
+const SEMVER_RE = /^\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?$/;
+
+const version = process.argv[2];
+const shouldTag = process.argv.includes("--tag");
+
+if (!version) {
+  console.error("Usage: node scripts/bump-version.mjs <version> [--tag]");
+  console.error("  <version>  Semver string, e.g. 0.2.0 or 1.0.0-rc1");
+  console.error("  --tag      Git add, commit, and tag after updating files");
+  process.exit(1);
+}
+
+if (!SEMVER_RE.test(version)) {
+  console.error(`Invalid semver: "${version}". Expected format: X.Y.Z or X.Y.Z-pre`);
+  process.exit(1);
+}
+
+// Update package.json
+const pkg = JSON.parse(readFileSync(PACKAGE_JSON, "utf8"));
+pkg.version = version;
+writeFileSync(PACKAGE_JSON, JSON.stringify(pkg, null, 2) + "\n");
+console.log(`  package.json → ${version}`);
+
+// Update tauri.conf.json
+const tauri = JSON.parse(readFileSync(TAURI_CONF, "utf8"));
+tauri.version = version;
+writeFileSync(TAURI_CONF, JSON.stringify(tauri, null, 2) + "\n");
+console.log(`  tauri.conf.json → ${version}`);
+
+bumpCargoToml(CARGO_TOML, version);
+console.log(`  src-tauri/Cargo.toml → ${version}`);
+
+bumpCargoToml(CLI_CARGO_TOML, version);
+console.log(`  mosaic-cli/Cargo.toml → ${version}`);
+
+// Record only our own crates' new versions in the lockfiles. generate-lockfile
+// would re-resolve every dependency, so a release would ship untested upgrades.
+// mosaic-cli picks up src-tauri's new version via its path dep, so bump
+// src-tauri first.
+execSync("cargo update --workspace", { cwd: resolve(root, "src-tauri"), stdio: "inherit" });
+console.log(`  src-tauri/Cargo.lock updated`);
+execSync("cargo update --workspace", { cwd: resolve(root, "mosaic-cli"), stdio: "inherit" });
+console.log(`  mosaic-cli/Cargo.lock updated`);
+
+console.log(`\nVersion bumped to ${version}`);
+
+execSync("node scripts/sync-defaults.mjs", { cwd: root, stdio: "inherit" });
+
+if (shouldTag) {
+  const files = [
+    PACKAGE_JSON, TAURI_CONF,
+    CARGO_TOML, CARGO_LOCK,
+    CLI_CARGO_TOML, CLI_CARGO_LOCK,
+    SRC_INDEX,
+  ].map((f) => relative(root, f));
+  // Use execFileSync (no shell) so a future file path with spaces or
+  // glob metachars can't break quoting.
+  execFileSync("git", ["add", "--", ...files], { cwd: root, stdio: "inherit" });
+  let hasStaged = false;
+  try { execFileSync("git", ["diff", "--cached", "--quiet"], { cwd: root, stdio: "ignore" }); } catch { hasStaged = true; }
+  if (hasStaged) {
+    execFileSync("git", ["commit", "-m", `chore: bump version to ${version}`], {
+      cwd: root,
+      stdio: "inherit",
+    });
+  } else {
+    console.log("  No changes to commit (version already current)");
+  }
+  execFileSync("git", ["tag", `v${version}`], { cwd: root, stdio: "inherit" });
+  console.log(`Created tag v${version}`);
+}

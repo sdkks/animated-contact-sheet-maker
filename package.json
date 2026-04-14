@@ -1,0 +1,35 @@
+{
+  "name": "mosaic",
+  "version": "0.1.8",
+  "private": true,
+  "type": "module",
+  "description": "Cross-platform desktop app for generating video contact sheets, screenshots, animated preview reels, and animated contact sheets",
+  "author": "Mosaic contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mosaicvideo/mosaic.git"
+  },
+  "packageManager": "pnpm@11.22.0",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "dev:web": "vite",
+    "build:web": "vite build",
+    "dev:cli": "cargo run --manifest-path mosaic-cli/Cargo.toml --bin mosaic-cli --",
+    "version:bump": "node scripts/bump-version.mjs",
+    "sync:defaults": "node scripts/sync-defaults.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.1",
+    "vite": "^8.3.2"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.1",
+    "@tauri-apps/plugin-dialog": "^2.8.1",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-store": "^2.5.0",
+    "@tauri-apps/plugin-updater": "^2.13.1"
+  }
+}

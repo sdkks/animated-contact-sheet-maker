@@ -1,0 +1,473 @@
+use crate::ffmpeg::{run_batch_cancellable, Need, RunError};
+use crate::jobs::{move_into_place, PipelineContext};
+use crate::layout::require_nonzero;
+use crate::output_path::{vp9_crf, ReelFormat};
+use crate::video_info::VideoInfo;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PreviewOptions {
+    pub count: u32,
+    pub clip_length_secs: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub quality: u32,
+    #[serde(default)]
+    pub suffix: String,
+    #[serde(default)]
+    pub format: ReelFormat,
+}
+
+impl PreviewOptions {
+    pub fn validate(&self) -> Result<(), String> {
+        require_nonzero("clip count", self.count)?;
+        require_nonzero("clip length", self.clip_length_secs)?;
+        require_nonzero("fps", self.fps)?;
+        if self.height < 2 { return Err("height must be at least 2px".into()); }
+        Ok(())
+    }
+
+    pub fn needs(&self) -> Vec<Need> {
+        match self.format {
+            ReelFormat::Webp => vec![Need::Libx264, Need::Libwebp],
+            ReelFormat::Webm => vec![Need::Libx264, Need::LibvpxVp9],
+            ReelFormat::Gif => vec![Need::Libx264],
+        }
+    }
+}
+
+pub fn build_extract_args(
+    source: &Path,
+    info: &VideoInfo,
+    timestamp: f64,
+    clip_length_secs: u32,
+    target_height: u32,
+    has_zscale: bool,
+    output: &Path,
+) -> Vec<String> {
+    let desired = clip_length_secs as f64;
+    let remaining = (info.duration_secs - timestamp).max(0.0);
+    let duration = desired.min(remaining);
+
+    let mut args = crate::ffmpeg::base_args();
+    args.extend(crate::ffmpeg::seek_input_args_clip(source, timestamp));
+    args.extend([
+        "-t".into(), format!("{:.3}", duration),
+    ]);
+    let tonemap = crate::ffmpeg::tonemap_filter(has_zscale, info.video.color_transfer.as_deref(), info.video.dv_profile);
+    // Scale when: tone-mapping, downscaling to fit target height, OR the
+    // source has non-square pixels (SAR). The SAR case is the fix for
+    // anamorphic sources: skipping the scale would carry the encoded
+    // non-square grid through to the stitched webp/webm/gif, where SAR is
+    // typically lost and the clip would play with wrong aspect.
+    let needs_scale = info.video.height > target_height || info.video.sar.is_some();
+    // Final height: clamp to target, but don't upscale a source that's
+    // already smaller than target — pointless bandwidth. Width follows
+    // the displayed aspect so anamorphic sources render correctly.
+    let scale = needs_scale.then(|| {
+        let out_h = info.video.height.min(target_height);
+        let out_w = crate::layout::thumb_width(out_h, info.video.width, info.video.height);
+        format!("scale={}:{}", out_w, out_h)
+    });
+    let vf = crate::ffmpeg::vf_chain(&[tonemap.as_deref(), scale.as_deref()]);
+    if !vf.is_empty() {
+        args.push("-vf".into());
+        args.push(vf);
+    }
+    args.extend(crate::ffmpeg::h264_clip_encoder());
+    args.push(output.to_string_lossy().into_owned());
+    args
+}
+
+/// Hard cap on GIF frame rate. GIF has no inter-frame compression so output
+/// size scales roughly linearly with frame count; capping avoids absurd files.
+const GIF_FPS_CAP: u32 = 12;
+/// Palette size cap for GIF. 128 colors looks nearly identical to 256 on
+/// typical footage while meaningfully shrinking each frame's LZW dictionary.
+const GIF_MAX_COLORS: u32 = 128;
+
+/// Build the final stitch/encode invocation for the selected reel format.
+///
+/// - **WebP** (`libwebp`): `quality` maps directly to `-quality`; `-loop 0`.
+/// - **WebM** (`libvpx-vp9`): `quality` maps to CRF via [`crate::output_path::vp9_crf`].
+///   VP9 loops natively in browsers, so no `-loop` flag. `-b:v 0` enables pure CRF mode.
+/// - **GIF**: palette-based, single pass via `-filter_complex` (required
+///   because `split` emits labeled outputs). `quality` has no knob; ignored.
+///   Frame rate is hard-capped at [`GIF_FPS_CAP`] and palette at
+///   [`GIF_MAX_COLORS`] to keep output sizes reasonable.
+pub fn build_stitch_args(
+    concat_list: &Path,
+    fps: u32,
+    quality: u32,
+    format: ReelFormat,
+    output: &Path,
+) -> Vec<String> {
+    let mut args = crate::ffmpeg::base_args();
+    args.extend([
+        "-f".into(), "concat".into(),
+        "-safe".into(), "0".into(),
+        "-i".into(), concat_list.to_string_lossy().into_owned(),
+    ]);
+    match format {
+        ReelFormat::Webp => {
+            args.extend([
+                "-vf".into(), format!("fps={}", fps),
+                "-c:v".into(), "libwebp".into(),
+                "-loop".into(), "0".into(),
+                "-quality".into(), format!("{}", quality),
+            ]);
+        }
+        ReelFormat::Webm => {
+            args.extend([
+                "-vf".into(), format!("fps={}", fps),
+                "-c:v".into(), "libvpx-vp9".into(),
+                "-b:v".into(), "0".into(),
+                "-crf".into(), format!("{}", vp9_crf(quality)),
+                "-pix_fmt".into(), "yuv420p".into(),
+            ]);
+        }
+        ReelFormat::Gif => {
+            let gif_fps = fps.min(GIF_FPS_CAP);
+            args.extend([
+                "-filter_complex".into(),
+                format!(
+                    "fps={},split[a][b];[a]palettegen=stats_mode=diff:max_colors={}[p];[b][p]paletteuse=dither=sierra2_4a",
+                    gif_fps, GIF_MAX_COLORS
+                ),
+                "-loop".into(), "0".into(),
+            ]);
+        }
+    }
+    args.push(output.to_string_lossy().into_owned());
+    args
+}
+
+pub fn render_concat_list(paths: &[PathBuf]) -> String {
+    let mut out = String::new();
+    for p in paths {
+        // ffmpeg concat demuxer accepts forward slashes on all platforms.
+        // On Windows backslashes would need different escaping per ffmpeg
+        // version — normalizing to `/` avoids the whole minefield.
+        // Note: on Unix, filenames may legally contain a literal `\`
+        // character; normalization converts it to `/`, which may theoretically
+        // collide with a real directory separator in a contrived path. This is
+        // a known, accepted trade-off for cross-platform correctness.
+        let s = p.to_string_lossy().replace('\\', "/");
+        // Inside ffmpeg's single quotes nothing is special, so a literal quote
+        // must close the string, be backslash-escaped, then reopen it.
+        let escaped = s.replace('\'', "'\\''");
+        out.push_str("file '");
+        out.push_str(&escaped);
+        out.push_str("'\n");
+    }
+    out
+}
+
+pub async fn generate(
+    source: &Path,
+    info: &VideoInfo,
+    out: &Path,
+    opts: &PreviewOptions,
+    ctx: &PipelineContext<'_>,
+) -> Result<(), RunError> {
+    opts.validate().map_err(RunError::Invalid)?;
+    info.require_seekable().map_err(RunError::Invalid)?;
+    let timestamps = crate::layout::sample_clip_timestamps(info.duration_secs, opts.count, opts.clip_length_secs as f64);
+    if timestamps.is_empty() {
+        return Err(RunError::Invalid(format!(
+            "source duration ({:.2}s) is too short for {}s clips",
+            info.duration_secs, opts.clip_length_secs
+        )));
+    }
+    let total_steps = (timestamps.len() as u32) + 1;
+
+    let tmp = tempfile::TempDir::new()?;
+    let mut clips: Vec<std::path::PathBuf> = Vec::with_capacity(timestamps.len());
+    let mut batch = Vec::with_capacity(timestamps.len());
+
+    for (i, ts) in timestamps.iter().enumerate() {
+        let idx = (i as u32) + 1;
+        let clip = tmp.path().join(format!("clip_{:03}.mp4", idx));
+        let args = build_extract_args(source, info, *ts, opts.clip_length_secs, opts.height, ctx.has_zscale, &clip);
+        batch.push(args);
+        clips.push(clip);
+    }
+
+    let mut done = 0u32;
+    run_batch_cancellable(ctx.ffmpeg, batch, ctx.cancelled.clone(), |_| {
+        done += 1;
+        (ctx.reporter.emit)(done, total_steps, &format!("Reel clip {}/{}", done, timestamps.len()));
+    }).await?;
+
+    (ctx.reporter.emit)(total_steps, total_steps, "Stitching reel");
+    let concat_list = tmp.path().join("concat.txt");
+    std::fs::write(&concat_list, render_concat_list(&clips))?;
+
+    let staged = tmp.path().join(format!("reel.{}", opts.format.ext()));
+    let args = build_stitch_args(&concat_list, opts.fps, opts.quality, opts.format, &staged);
+    crate::ffmpeg::run_cancellable(ctx.ffmpeg, &args, ctx.cancelled.clone()).await?;
+    move_into_place(&staged, out)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_info(duration: f64, height: u32) -> VideoInfo {
+        VideoInfo {
+            filename: String::new(),
+            duration_secs: duration,
+            duration_source: Default::default(),
+            size_bytes: None,
+            bit_rate: None,
+            video: crate::video_info::VideoStream {
+                codec: String::new(),
+                profile: None,
+                width: 1920,
+                height,
+                fps: 30.0,
+                bit_rate: None,
+                is_hdr: false,
+                color_transfer: None,
+                dv_profile: None,
+                rotation: None,
+                sar: None,
+            },
+            audio: None,
+            enrichment: None,
+        }
+    }
+
+    #[test]
+    fn extract_args_basic() {
+        let info = sample_info(60.0, 1080);
+        let args = build_extract_args(
+            Path::new("/v/movie.mkv"),
+            &info,
+            12.5,
+            5,
+            480,
+            false,
+            &PathBuf::from("/tmp/out/clip_01.mp4"),
+        );
+        assert_eq!(args[0], "-hide_banner");
+        assert!(args.iter().any(|a| a == "-an"));
+        // Clip seeking: single -ss (no -copyts) for compatibility with TS containers
+        assert!(!args.iter().any(|a| a == "-copyts"));
+        assert!(args.windows(2).any(|w| w[0] == "-ss" && w[1] == "12.500"));
+        assert!(args.windows(2).any(|w| w[0] == "-i" && w[1] == "/v/movie.mkv"));
+        assert!(args.windows(2).any(|w| w[0] == "-t" && w[1] == "5.000"));
+        // Displayed-dim scale: 1920×1080 source, target height 480 →
+        // width = 480 * 1920/1080 = 853 → even-rounded to 852.
+        assert!(args.windows(2).any(|w| w[0] == "-vf" && w[1] == "scale=852:480"));
+        assert_eq!(args.last().unwrap(), "/tmp/out/clip_01.mp4");
+    }
+
+    #[test]
+    fn extract_args_anamorphic_source_uses_displayed_width() {
+        // Anamorphic: caller already passed displayed dims (video_info.rs
+        // does the SAR conversion at parse time). For a displayed 606×1080,
+        // target height 480 → width = 480 * 606/1080 = 269 → even 268.
+        let mut info = sample_info(60.0, 1080);
+        info.video.width = 606;
+        info.video.sar = Some((9, 16));
+        let args = build_extract_args(
+            Path::new("/v/portrait.mp4"),
+            &info,
+            5.0,
+            3,
+            480,
+            false,
+            &PathBuf::from("/tmp/p.mp4"),
+        );
+        assert!(args.windows(2).any(|w| w[0] == "-vf" && w[1] == "scale=268:480"));
+    }
+
+    #[test]
+    fn extract_args_small_anamorphic_scales_to_displayed_dims_not_upscaling() {
+        // 640×360 encoded with SAR 9:16 → displayed 360×360. Target height
+        // 480 is larger than source; must NOT upscale to 480 but must still
+        // scale out the non-square pixels so the stitched reel renders as
+        // a 360×360 square instead of a 640×360 wide grid.
+        let mut info = sample_info(60.0, 360);
+        info.video.width = 360;
+        info.video.sar = Some((9, 16));
+        let args = build_extract_args(
+            Path::new("/v/tiny.mp4"),
+            &info,
+            1.0,
+            2,
+            480,
+            false,
+            &PathBuf::from("/tmp/t.mp4"),
+        );
+        assert!(args.windows(2).any(|w| w[0] == "-vf" && w[1] == "scale=360:360"));
+    }
+
+    #[test]
+    fn extract_args_skips_scale_when_source_smaller_and_square_pixels() {
+        // Regression guard: small landscape source, square pixels, no
+        // tonemap. The old behaviour (skip scale) must be preserved — we
+        // only added SAR to the gate, not encoded-vs-target comparison.
+        let info = sample_info(60.0, 360);
+        let args = build_extract_args(
+            Path::new("/v/small.mp4"),
+            &info,
+            1.0,
+            2,
+            480,
+            false,
+            &PathBuf::from("/tmp/s.mp4"),
+        );
+        assert!(!args.iter().any(|a| a == "-vf"));
+    }
+
+    #[test]
+    fn extract_args_skips_scale_when_source_smaller_or_equal() {
+        let info = sample_info(60.0, 480);
+        let args = build_extract_args(
+            Path::new("/v/movie.mkv"),
+            &info,
+            12.0,
+            5,
+            480,
+            false,
+            &PathBuf::from("/tmp/out/clip_01.mp4"),
+        );
+        assert!(!args.iter().any(|a| a == "-vf"));
+    }
+
+    #[test]
+    fn extract_args_clamps_duration_when_overshoots_end() {
+        let info = sample_info(10.0, 1080);
+        let args = build_extract_args(
+            Path::new("/v/movie.mkv"),
+            &info,
+            8.0,
+            5,
+            480,
+            false,
+            &PathBuf::from("/tmp/out/clip_03.mp4"),
+        );
+        // 10.0 - 8.0 = 2.0 (less than requested 5)
+        assert!(args.windows(2).any(|w| w[0] == "-t" && w[1] == "2.000"));
+    }
+
+    #[test]
+    fn stitch_args_uses_concat_demuxer_and_libwebp() {
+        let args = build_stitch_args(
+            Path::new("/tmp/concat.txt"),
+            24,
+            75,
+            ReelFormat::Webp,
+            Path::new("/out/movie - reel.webp"),
+        );
+        assert_eq!(args[0], "-hide_banner");
+        assert!(args.windows(2).any(|w| w[0] == "-f" && w[1] == "concat"));
+        assert!(args.windows(2).any(|w| w[0] == "-safe" && w[1] == "0"));
+        assert!(args.windows(2).any(|w| w[0] == "-i" && w[1] == "/tmp/concat.txt"));
+        assert!(args.windows(2).any(|w| w[0] == "-vf" && w[1] == "fps=24"));
+        assert!(args.windows(2).any(|w| w[0] == "-c:v" && w[1] == "libwebp"));
+        assert!(args.windows(2).any(|w| w[0] == "-loop" && w[1] == "0"));
+        assert!(args.windows(2).any(|w| w[0] == "-quality" && w[1] == "75"));
+        assert_eq!(args.last().unwrap(), "/out/movie - reel.webp");
+    }
+
+    #[test]
+    fn stitch_args_webm_uses_libvpx_vp9_crf_mode() {
+        let args = build_stitch_args(
+            Path::new("/tmp/concat.txt"),
+            24,
+            75,
+            ReelFormat::Webm,
+            Path::new("/out/movie - reel.webm"),
+        );
+        assert!(args.windows(2).any(|w| w[0] == "-vf" && w[1] == "fps=24"));
+        assert!(args.windows(2).any(|w| w[0] == "-c:v" && w[1] == "libvpx-vp9"));
+        assert!(args.windows(2).any(|w| w[0] == "-b:v" && w[1] == "0"));
+        assert!(args.windows(2).any(|w| w[0] == "-crf"));
+        assert!(args.windows(2).any(|w| w[0] == "-pix_fmt" && w[1] == "yuv420p"));
+        // No -loop for VP9 — browsers loop WebM natively.
+        assert!(!args.iter().any(|a| a == "-loop"));
+        // Quality must NOT appear verbatim (webm uses CRF, not -quality).
+        assert!(!args.iter().any(|a| a == "-quality"));
+        assert_eq!(args.last().unwrap(), "/out/movie - reel.webm");
+    }
+
+    #[test]
+    fn stitch_args_gif_uses_filter_complex_palettegen() {
+        let args = build_stitch_args(
+            Path::new("/tmp/concat.txt"),
+            12,
+            75,
+            ReelFormat::Gif,
+            Path::new("/out/movie - reel.gif"),
+        );
+        // GIF path must use -filter_complex (not -vf) because `split` emits labels.
+        assert!(!args.iter().any(|a| a == "-vf"));
+        let fc_pos = args.iter().position(|a| a == "-filter_complex")
+            .expect("gif branch must use -filter_complex");
+        let graph = &args[fc_pos + 1];
+        assert!(graph.contains("fps=12"));
+        assert!(graph.contains("split"));
+        assert!(graph.contains("palettegen=stats_mode=diff"));
+        assert!(graph.contains("max_colors=128"));
+        assert!(graph.contains("paletteuse=dither=sierra2_4a"));
+        assert!(args.windows(2).any(|w| w[0] == "-loop" && w[1] == "0"));
+        // No codec selection flags — ffmpeg picks GIF encoder from the .gif extension.
+        assert!(!args.iter().any(|a| a == "-c:v"));
+        assert_eq!(args.last().unwrap(), "/out/movie - reel.gif");
+    }
+
+    #[test]
+    fn stitch_args_gif_caps_fps_at_12() {
+        // User requests 30 fps — GIF branch must clamp to the hard cap.
+        let args = build_stitch_args(
+            Path::new("/tmp/concat.txt"),
+            30,
+            75,
+            ReelFormat::Gif,
+            Path::new("/out/movie - reel.gif"),
+        );
+        let fc_pos = args.iter().position(|a| a == "-filter_complex").unwrap();
+        let graph = &args[fc_pos + 1];
+        assert!(graph.contains("fps=12"), "expected fps=12 cap, got graph: {}", graph);
+        assert!(!graph.contains("fps=30"), "requested 30fps must be clamped for GIF");
+    }
+
+    #[test]
+    fn stitch_args_gif_keeps_lower_requested_fps() {
+        // User requests 8 fps — below the cap, must pass through unchanged.
+        let args = build_stitch_args(
+            Path::new("/tmp/concat.txt"),
+            8,
+            75,
+            ReelFormat::Gif,
+            Path::new("/out/movie - reel.gif"),
+        );
+        let fc_pos = args.iter().position(|a| a == "-filter_complex").unwrap();
+        let graph = &args[fc_pos + 1];
+        assert!(graph.contains("fps=8"), "fps below cap must pass through; got: {}", graph);
+    }
+
+    #[test]
+    fn concat_list_basic() {
+        let list = render_concat_list(&[
+            PathBuf::from("/tmp/a/clip_01.mp4"),
+            PathBuf::from("/tmp/a/clip_02.mp4"),
+        ]);
+        assert_eq!(
+            list,
+            "file '/tmp/a/clip_01.mp4'\nfile '/tmp/a/clip_02.mp4'\n"
+        );
+    }
+
+    #[test]
+    fn concat_list_escapes_single_quote_normalizes_backslash() {
+        let list = render_concat_list(&[
+            PathBuf::from("/tmp/o'brien\\videos/clip.mp4"),
+        ]);
+        assert_eq!(list, "file '/tmp/o'\\''brien/videos/clip.mp4'\n");
+    }
+}

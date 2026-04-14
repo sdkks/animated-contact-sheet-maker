@@ -1,0 +1,180 @@
+# Changelog
+
+All notable changes to Mosaic will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.1.8] - 2026-10-11
+
+### Added
+
+- **`mosaic-cli probe` reports `duration_source`**: `container`, `stream`, `mediainfo` or `frame_count`.
+
+### Fixed
+
+- **Files whose container reports no length failed with "missing duration".** Mosaic now falls back to the stream's duration, then MediaInfo's, then frame count ÷ frame rate.
+- **Files with no timestamps at all** (a bare video stream with no container) now get an error saying to remux them, instead of a sheet of the same frame repeated: ffmpeg can't seek in them.
+
+## [0.1.7] - 2026-10-03
+
+### Added
+
+- **Dropping a folder onto the window adds the videos inside it.** Before, only the Add Folder button did.
+- **Screen-reader labels** for the progress bar, status line and MediaInfo window, and keyboard access to revealing a finished file.
+
+### Fixed
+
+- **Mosaic now checks what the installed ffmpeg can do.** Homebrew's default `ffmpeg` has no `drawtext` filter and no `libwebp` encoder, so sheets with timestamps or a header, WebP previews and animated sheets failed on every file while the startup check reported all tools present. Mosaic now warns at startup and fails once per run, naming what is missing and how to fix it. `mosaic-cli` does the same.
+- **The Generate lock-up fix in 0.1.6 didn't work.** A crashed job still left every later Generate failing with "a job is already running" until restart; entering 0 columns was one way to trigger it. Settings are now also checked before a job starts.
+- **Cancelled or failed runs left half-written files** at the output path, and the next run then saved as `name (1)`.
+- **Cancel could be lost** when clicked just as Mosaic moved to the next output type.
+- **Clearing a number field broke Generate, even after a restart.** Empty or out-of-range values now fall back to the default or the nearest limit.
+- **Files removed from the queue during a run were still processed.** Clear and the remove buttons are disabled while a run is in progress.
+- **The status said "Done" even when files failed.** It now reports counts.
+- **Folder scans skipped symlinked files and folders.**
+- **The MediaInfo window could show the previous file's output** under the new file's name.
+- **The custom output folder was forgotten** after switching to "Next to source".
+- **In the "tools missing" state, dropped files were still added** and the keyboard could reach the dimmed controls.
+- **Unchecking the last output type re-checked Screenshots** instead of the box just unchecked.
+- **`mosaic-cli --help` linked to a page that no longer exists.**
+- **Windows: `mosaic-cli sheet` and `animated-sheet` crashed ffmpeg** whenever timestamps or a header were drawn, which is the default.
+- **The Windows install command in the "required tools not found" panel didn't work.** It named the winget package `MediaArea.MediaInfo.CLI`, which doesn't exist; it now reads `winget install Gyan.FFmpeg MediaArea.MediaInfo`.
+
+### Changed
+
+- **The website and install scripts moved to `https://mosaicvideo.github.io/`.** The old `/mosaic/` paths no longer work.
+- **Every dependency updated to latest** — Tauri 2.12.1, updater plugin 2.13.1, Vite 8.3.2.
+
+### Removed
+
+- **`.iso` and `.r3d` are no longer accepted as video files.** ffmpeg can't read either.
+
+## [0.1.6] - 2026-08-23
+
+### Fixed
+
+- **The Generate button could lock up permanently.** If a job failed in a way that panicked the worker, the internal "job running" flag was never cleared — every later Generate returned "a job is already running" until the app was restarted.
+- **Windows: "Reveal in Explorer" selected the wrong file** when the filename contained a comma. Explorer splits `/select,<path>` on the first comma, so `foo,bar.mkv` highlighted a sibling file instead.
+- **macOS: revealing a file with a non-UTF8 path failed** instead of opening Finder. Rare on APFS, but legal.
+- **Animated contact sheets had 1px asymmetric padding on odd gap values.** ffmpeg's `pad` filter takes integer offsets, so a gap of 9 produced 4px on the left and 5px on the right. Gaps now round down to even.
+- **`mosaic-cli` printed wrong winget package IDs** when ffmpeg or MediaInfo was missing — `winget install ffmpeg MediaArea.MediaInfo.CLI` matched nothing. Now `Gyan.FFmpeg MediaArea.MediaInfo`.
+
+### Changed
+
+- **Every dependency updated to latest** — Tauri 2.11.5, Vite 8.2.2, plus tokio, serde, clap, indicatif, and the `toml` crate from 0.8 to 1.
+- **Build toolchain moved to Rust edition 2024 and pnpm 11.** No runtime behavior change.
+- **All CI actions bumped to their latest majors**, including `tauri-action` v0 → v1. As a result, the macOS `.app.tar.gz` updater artifact now carries the version in its filename, and `latest.json` references release assets by API URL rather than browser download URL.
+
+## [0.1.5] - 2026-04-19
+
+### Added
+
+- **One-liner install scripts for `mosaic-cli`** served via GitHub Pages at `https://mosaicvideo.github.io/mosaic/install.sh` (macOS/Linux) and `install.ps1` (Windows). Detect OS/arch, resolve the latest release via the GitHub API, download + SHA256-verify the matching binary, install to a user-scoped directory, and print PATH + shell-completion hints.
+- **`SHA256SUMS` release artifact** covering every `mosaic-cli-*` binary. Aggregated in CI from per-artifact `.sha256` files uploaded by each matrix runner. Verify downloads with `shasum -a 256 -c SHA256SUMS`.
+- **`mosaic-cli completions <shell>`** — emits a shell-completion script for bash, zsh, fish, powershell, or elvish.
+- **`mosaic-cli manpage`** — emits a roff man page. Install with `mosaic-cli manpage > ~/.local/share/man/man1/mosaic-cli.1`.
+- **Dedicated CLI reference page** at `https://mosaicvideo.github.io/mosaic/cli.html` covering install, subcommand flags (defaults mirrored from `defaults.rs`), config file format, shell completions, man page, upgrading, uninstalling, and troubleshooting. Linked from the top nav on every site page.
+
+### Fixed
+
+- **Stale `cargo install` snippet in the guide and README.** The build-from-source instruction pointed at `cd src-tauri && cargo install --path . --bin mosaic-cli --features cli` — wrong since the CLI moved to a sibling crate in v0.1.4. Both places now link to `cli.html`.
+
+## [0.1.4] - 2026-04-18
+
+### Added
+
+- **Command-line interface (`mosaic-cli`)** — every GUI pipeline available as a subcommand (`screenshots`, `sheet`, `reel`, `animated-sheet`, `probe`). Batch-friendly for scripts and headless servers — stdout is paths-only so it pipes cleanly into `xargs`. Ctrl-C cancellation, continue-on-error batch mode. Per-user config at `~/.mosaic-cli.toml` auto-created on first run (override path via `$MOSAIC_CLI_CONFIG`); CLI flags always override config. Signed + notarized macOS universal binary plus Windows x86_64/aarch64 and Linux x86_64 binaries ship alongside the GUI installers.
+- **Multi-output history per queue row** — after a shots + sheet + reel run in a single Generate, the row now remembers all three outputs. Clicking reveals the shared parent folder; hover lists every filename. Previously only the last pass's output was kept.
+
+### Fixed
+
+- **Filename-suffix default mismatch** — clearing the screenshots suffix field used to restore `_screenshot_` on the UI while the backend wrote `_screens_`. UI defaults now match the backend constants.
+- **Silent probe failures in the queue** — rows whose probe fails now show `⚠ probe failed` (with the error as a tooltip) instead of leaving the metadata cell permanently blank.
+- **Unreadable auto-update dialog** — the native update prompt no longer dumps the full release-notes markdown; it shows just the version and install question. Full notes remain on the release page.
+
+### Changed
+
+- **Faster multi-pass Generate** — the backend now reuses the probe the frontend already performs on queue-add instead of re-probing per pass. A shots + sheet + reel run on 10 files drops from 40 redundant ffprobe + mediainfo invocations to zero.
+
+## [0.1.3] - 2026-04-17
+
+### Added
+
+- **Richer contact-sheet headers via MediaInfo** — headers now show container title, video bit depth, HDR format (Dolby Vision / HDR10 / HLG), commercial audio codec name (e.g. DTS-HD MA, Dolby Atmos), channel layout (5.1, 7.1), and language tag. Header is one section per line so nothing clips on narrow grids.
+- **MediaInfo CLI promoted to a required prerequisite** — same tools-missing state as ffmpeg if absent. Enables the enrichment above and powers the existing per-file metadata viewer.
+
+### Fixed
+
+- **Anamorphic sources (phone portrait, non-square SAR)** render with the correct aspect across every output type. Previously a 9:16 phone clip encoded in a 1080×1080 frame came out squashed-square in contact sheets, reels, and screenshots. Mosaic now uses displayed square-pixel dimensions (applying SAR and Display Matrix rotation) for both layout and scaling.
+- **Rotated sources (±90° / ±270° Display Matrix)** — portrait orientation is preserved end-to-end instead of silently using encoded landscape dims.
+- **3D Blu-ray / MVC inputs** — contact sheets no longer come out as zero-dim squares; the usable base-layer stream is now preferred over the dependent-enhancement view that ffprobe lists first.
+
+### Changed
+
+- Probe pipeline now runs ffprobe and MediaInfo concurrently per file, roughly halving drag-and-drop probe latency.
+
+## [0.1.2] - 2026-04-17
+
+### Added
+
+- **Auto-update** — app checks GitHub for new releases on startup and offers one-click install with signed `.app.tar.gz` bundles (ed25519 signatures verified against embedded public key)
+- **macOS code signing + notarization** — Developer ID Application signed, stapled, Gatekeeper-trusted on first open (no right-click → Open dance)
+- **Windows ARM64 builds** — native `aarch64-pc-windows-msvc` artifacts alongside x64
+- **Version in title bar** — window title now shows `Mosaic 0.1.2` etc., set at startup from `CARGO_PKG_VERSION`
+
+### Fixed
+
+- **MediaInfo lookup on macOS** — `locate_mediainfo` now falls back to `/opt/homebrew/bin` and `/usr/local/bin` when `PATH` doesn't include Homebrew (as happens for apps launched from Finder)
+
+### Notes
+
+v0.1.1 users: **this release requires a manual download** since v0.1.1 predates the updater plugin. From v0.1.2 onward, updates install automatically.
+
+## [0.1.1] - 2026-04-16
+
+### Added
+
+- Auto-tonemap HDR10, HLG, and Dolby Vision thumbnails to SDR across all output types
+- MediaInfo modal — click the file icon in any queue row to view raw `mediainfo` output with copy-to-clipboard
+- Expanded video format support from 12 to 44 recognized container types
+
+### Fixed
+
+- Clip extraction (preview reels, animated sheets) now uses simple seeking to avoid decode failures on transport stream containers (.ts, .m2ts)
+- Explicit zscale input colorspace prevents "no path between colorspaces" errors during HDR tonemapping
+- DV Profile 5 streams with unknown transfer function are left untouched instead of producing garbage output
+
+### Changed
+
+- Upgraded thiserror 1→2 and which 6→8
+- Reveal-on-click in queue narrowed from whole row to filename only
+
+## [0.1.0] - 2026-04-16
+
+### Added
+
+- Contact sheet generation with configurable grid, timestamps, header, and themes (PNG/JPEG)
+- Individual screenshot extraction at evenly-spaced timestamps (PNG/JPEG)
+- Animated preview reels stitched from short video clips (WebP/WebM/GIF)
+- Animated contact sheets with grid of animated clips (WebP)
+- Drag-and-drop batch queue with per-file progress and cancel support
+- Dark/light theme following system preference
+- Configurable output quality, fonts, suffixes, and output location
+- Frame-accurate seeking with parallel extraction
+- Folder scanning with recursive depth support
+- ffmpeg/ffprobe tool detection with user-friendly error state
+- macOS, Windows, and Linux support (requires ffmpeg installed separately)
+
+[unreleased]: https://github.com/mosaicvideo/mosaic/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/mosaicvideo/mosaic/compare/v0.1.7...v0.1.8
+[0.1.7]: https://github.com/mosaicvideo/mosaic/compare/v0.1.6...v0.1.7
+[0.1.6]: https://github.com/mosaicvideo/mosaic/compare/v0.1.5...v0.1.6
+[0.1.5]: https://github.com/mosaicvideo/mosaic/compare/v0.1.4...v0.1.5
+[0.1.4]: https://github.com/mosaicvideo/mosaic/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/mosaicvideo/mosaic/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/mosaicvideo/mosaic/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/mosaicvideo/mosaic/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/mosaicvideo/mosaic/releases/tag/v0.1.0
