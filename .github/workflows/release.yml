@@ -143,7 +143,22 @@ jobs:
           body: |
             ## What's New
 
-            ACSM is CLI-only. Build or install from the repository root with Cargo, without Node, Tauri, GTK or WebKit. The executable is `acsm`; rendering commands, configuration keys and output formats are retained. Previous configuration paths and environment variables are not read or migrated automatically.
+            ### Added
+
+            - Read batch file lists from stdin using `-`, with LF/CRLF lines or `--null` / `-0` for NUL-separated paths.
+            - Use `--overwrite-existing` to regenerate exact output paths.
+
+            ### Changed
+
+            - All rendering commands skip existing exact outputs by default instead of creating numbered duplicates.
+            - Screenshot batches resume missing images without changing their indices or sample times.
+            - Downloads cover Windows x64/ARM64 and Linux GNU/musl; macOS uses Cargo source installation.
+            - GNU Linux builds now use Ubuntu 26.04; the static musl build remains available for Alpine.
+
+            ### Fixed
+
+            - Final media files are prepared privately on the destination filesystem before publication, preserving previous outputs on pre-publication failures or cancellation.
+            - Partial screenshot failures report successfully published files and accurate completion counts.
 
             ### Requirements
 
@@ -157,7 +172,7 @@ jobs:
 
             ### Notes
 
-            Windows CLI builds are unsigned; SmartScreen may warn on first run. Desktop installers and GUI auto-updates are no longer produced.
+            Windows CLI builds are unsigned; SmartScreen may warn on first run.
 
             ACSM is MIT-licensed. The embedded DejaVu Sans font retains its Bitstream/Arev notices; see `assets/fonts/LICENSE` in the source.
           draft: true
