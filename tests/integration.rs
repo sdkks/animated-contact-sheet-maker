@@ -1,0 +1,650 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
+use mosaic_lib::animated_sheet::{self, AnimatedSheetOptions};
+use mosaic_lib::contact_sheet::{self, SheetOptions};
+use mosaic_lib::jobs::{PipelineContext, ProgressReporter};
+use mosaic_lib::output_path::{OutputFormat, ReelFormat, SheetTheme};
+use mosaic_lib::preview_reel::{self, PreviewOptions};
+use mosaic_lib::screenshots::{self, ScreenshotsOptions};
+use mosaic_lib::video_info::VideoInfo;
+
+fn fixture_path(name: &str) -> PathBuf {
+    [env!("CARGO_MANIFEST_DIR"), "tests", "fixtures", name].iter().collect()
+}
+
+fn font_path() -> PathBuf {
+    [env!("CARGO_MANIFEST_DIR"), "assets", "fonts", "DejaVuSans.ttf"].iter().collect()
+}
+
+/// Compare the production graph against a reference with simple relative paths.
+/// The text and font bytes are identical; only option-path escaping differs.
+#[test]
+fn literal_header_textfiles_render_with_punctuation_paths() {
+    use mosaic_lib::drawtext::{font_for_ffmpeg, header_overlay};
+    let ffmpeg = which::which("ffmpeg").expect("ffmpeg with drawtext required");
+    let root = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    let dirname = r"Miki's ☆ : \ [x],; 50%";
+    #[cfg(not(unix))]
+    let dirname = "Miki's ☆ [x],; 50%";
+    let dir = root.path().join(dirname);
+    std::fs::create_dir(&dir).unwrap();
+    let font = dir.join("font.ttf");
+    std::fs::copy(font_path(), &font).unwrap();
+    std::fs::copy(font_path(), root.path().join("reference.ttf")).unwrap();
+    let textfile = dir.join("line.txt");
+    let render = |graph: &str| {
+        let out = std::process::Command::new(&ffmpeg)
+            .current_dir(root.path())
+            .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                "color=black:s=1024x64:d=1", "-vf", graph, "-frames:v", "1",
+                "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"])
+            .output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+        out.stdout
+    };
+    let graph = header_overlay(std::slice::from_ref(&textfile), &font_for_ffmpeg(&font), 20, "white", 5, 26);
+    let reference = "drawtext=textfile=reference.txt:expansion=none:fontfile=reference.ttf:fontsize=20:fontcolor=white:x=5:y=5";
+    for text in ["Miki's ☆", r"a\b:c,[d];", "50% %{pts} %{eif:1+1:d}", "Duration: 01:10:30 | Bitrate: 5.0 Mb/s"] {
+        std::fs::write(&textfile, text).unwrap();
+        std::fs::write(root.path().join("reference.txt"), text).unwrap();
+        assert_eq!(std::fs::read_to_string(&textfile).unwrap(), text);
+        let pixels = render(&graph);
+        assert_eq!(pixels, render(reference), "literal reference differs for {text}");
+        assert!(pixels.iter().any(|&v| v != 0), "header must not be blank");
+        // A successful process alone is not enough: dropping punctuation or
+        // expanding percent expressions must produce a different raster.
+        std::fs::write(root.path().join("reference.txt"), "Mikis abcd 50 0.000000 2").unwrap();
+        assert_ne!(pixels, render(reference));
+    }
+    std::fs::write(&textfile, "%{pts}").unwrap();
+    std::fs::write(root.path().join("reference.txt"), "%{pts}").unwrap();
+    assert_ne!(render(&graph), render(&reference.replace("expansion=none", "expansion=normal")));
+}
+
+#[tokio::test]
+async fn both_header_pipelines_render_literal_synthetic_filename_and_cancel() {
+    use std::sync::atomic::Ordering;
+    let tools = mosaic_lib::ffmpeg_test_hook_locate().expect("media tools required");
+    let tmp = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    let filename = r"Miki's ☆ : \ [x],; 50% %{pts}.mp4";
+    #[cfg(not(unix))]
+    let filename = "Miki's ☆ [x],; 50% %{pts}.mp4";
+    let source = tmp.path().join(filename);
+    let result = std::process::Command::new(&tools.ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+            "color=black:s=160x90:r=8:d=3", "-c:v", "libx264"])
+        .arg(&source).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let mut info = mosaic_lib::ffmpeg_test_hook_probe(&tools, &source.to_string_lossy()).await.unwrap();
+    // Include untrusted metadata fields as well as the filename.
+    info.video.profile = Some("it's [a],; profile: 50% ☆".into());
+    let sheet = SheetOptions {
+        cols: 2, rows: 1, width: 1024, gap: 4,
+        thumb_font_size: 14, header_font_size: 16,
+        show_timestamps: true, show_header: true,
+        format: OutputFormat::Png, jpeg_quality: 92,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    };
+    let animated = AnimatedSheetOptions {
+        cols: 2, rows: 1, width: 1024, gap: 4, clip_length_secs: 1, fps: 4, quality: 60,
+        thumb_font_size: 14, header_font_size: 16, show_timestamps: true, show_header: true,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    };
+    for cancel_at_header in [false, true] {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let emit = |_: u32, _: u32, label: &str| {
+            if cancel_at_header && matches!(label, "Header" | "Stitching sheet") {
+                cancelled.store(true, Ordering::SeqCst);
+            }
+        };
+        let reporter = ProgressReporter { emit: &emit };
+        let ctx = PipelineContext { ffmpeg: &tools.ffmpeg, cancelled: cancelled.clone(), reporter: &reporter, has_zscale: false };
+        let out = tmp.path().join(format!("sheet-{cancel_at_header}.png"));
+        let result = contact_sheet::generate(&source, &info, &out, &sheet, &font_path(), &ctx).await;
+        if cancel_at_header {
+            assert!(matches!(result, Err(mosaic_lib::ffmpeg::RunError::Killed)));
+            assert!(!out.exists());
+        } else {
+            result.unwrap();
+            assert!(std::fs::metadata(out).unwrap().len() > 1000);
+        }
+        cancelled.store(false, Ordering::SeqCst);
+        let out = tmp.path().join(format!("animated-{cancel_at_header}.webp"));
+        let result = animated_sheet::generate(&source, &info, &out, &animated, &font_path(), &ctx).await;
+        if cancel_at_header {
+            assert!(matches!(result, Err(mosaic_lib::ffmpeg::RunError::Killed)));
+            assert!(!out.exists());
+        } else {
+            result.unwrap();
+            assert_animated_webp(&std::fs::read(out).unwrap());
+        }
+    }
+}
+
+/// Audio can outlive video; every sampled cell must still contain video.
+#[tokio::test]
+async fn selected_video_shorter_than_audio_renders_all_pipelines() {
+    let tools = mosaic_lib::ffmpeg_test_hook_locate().expect("media tools required");
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("short-video.mp4");
+    let result = std::process::Command::new(&tools.ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+            "testsrc2=s=96x64:r=12:d=4", "-f", "lavfi", "-i", "sine=duration=8",
+            "-c:v", "libx264", "-c:a", "aac"])
+        .arg(&source).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let info = mosaic_lib::ffmpeg_test_hook_probe(&tools, &source.to_string_lossy()).await.unwrap();
+    assert!(info.duration_secs >= 8.0, "container metadata remains unchanged");
+    let reporter = ProgressReporter { emit: &|_, _, _| {} };
+    let ctx = PipelineContext { ffmpeg: &tools.ffmpeg, cancelled: Arc::new(AtomicBool::new(false)), reporter: &reporter, has_zscale: false };
+    let animated = tmp.path().join("animated.webp");
+    animated_sheet::generate(&source, &info, &animated, &AnimatedSheetOptions {
+        cols: 6, rows: 4, width: 384, gap: 2, clip_length_secs: 1, fps: 4, quality: 60,
+        thumb_font_size: 14, header_font_size: 16, show_timestamps: false, show_header: false,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    }, &font_path(), &ctx).await.expect("24-cell animated sheet must not sample the audio-only tail");
+    assert_animated_webp(&std::fs::read(animated).unwrap());
+    contact_sheet::generate(&source, &info, &tmp.path().join("sheet.png"), &SheetOptions {
+        cols: 6, rows: 4, width: 384, gap: 2, thumb_font_size: 14, header_font_size: 16,
+        show_timestamps: false, show_header: false, format: OutputFormat::Png, jpeg_quality: 92,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    }, &font_path(), &ctx).await.unwrap();
+    let shots = screenshots::generate(&source, &info, &tmp.path().join("shots"), &ScreenshotsOptions {
+        count: 24, format: OutputFormat::Png, jpeg_quality: 92, suffix: String::new(),
+    }, &ctx).await.unwrap();
+    assert_eq!(shots.len(), 24);
+    for shot in shots { assert_eq!(probe_wh(&tools.ffprobe, &shot).await, (96, 64)); }
+    preview_reel::generate(&source, &info, &tmp.path().join("reel.webm"), &PreviewOptions {
+        count: 24, clip_length_secs: 1, height: 64, fps: 4, quality: 60,
+        suffix: String::new(), format: ReelFormat::Webm,
+    }, &ctx).await.unwrap();
+}
+
+/// Matroska commonly omits stream duration/count. Its container range must
+/// be shortened by the delayed video's origin before sampling all 24 cells.
+#[tokio::test]
+async fn selected_video_delayed_mkv_container_fallback_renders_all_pipelines() {
+    let tools = mosaic_lib::ffmpeg_test_hook_locate().expect("media tools required");
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("delayed.mkv");
+    let result = std::process::Command::new(&tools.ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+            "testsrc2=s=96x64:r=10:d=8", "-f", "lavfi", "-i", "sine=duration=10",
+            "-map", "0:v", "-map", "1:a", "-vf", "setpts=PTS+2/TB",
+            "-fps_mode:v", "passthrough", "-c:v", "libx264", "-c:a", "aac"])
+        .arg(&source).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let probe = std::process::Command::new(&tools.ffprobe)
+        .args(["-v", "error", "-show_streams", "-show_format", "-of", "json"])
+        .arg(&source).output().unwrap();
+    assert!(probe.status.success(), "{}", String::from_utf8_lossy(&probe.stderr));
+    let raw: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+    assert!(raw["streams"][0]["duration"].is_null());
+    assert!(raw["streams"][0]["nb_frames"].is_null());
+    // AAC priming can move the container origin slightly before zero, even
+    // though the selected video still starts at exactly two seconds.
+    let format_start: f64 = raw["format"]["start_time"].as_str().unwrap().parse().unwrap();
+    let format_duration: f64 = raw["format"]["duration"].as_str().unwrap().parse().unwrap();
+    let video_start: f64 = raw["streams"][0]["start_time"].as_str().unwrap().parse().unwrap();
+    assert_eq!(video_start, 2.0);
+    assert!(format_start.abs() < 0.05, "AAC origin must stay within 50ms of zero");
+    assert!((format_duration - 10.0).abs() < 0.05);
+    let expected_offset = video_start - format_start;
+    let info = mosaic_lib::ffmpeg_test_hook_probe(&tools, &source.to_string_lossy()).await.unwrap();
+    assert_eq!(info.video.duration_secs, None);
+    assert_eq!(info.video.start_secs, video_start);
+    assert!((info.video.seek_offset_secs - expected_offset).abs() < 1e-9);
+    assert_eq!(info.duration_secs, format_duration);
+    assert_eq!(info.duration_source, mosaic_lib::video_info::DurationSource::Container);
+    assert!(info.require_seekable().is_ok());
+    let reporter = ProgressReporter { emit: &|_, _, _| {} };
+    let ctx = PipelineContext { ffmpeg: &tools.ffmpeg, cancelled: Arc::new(AtomicBool::new(false)), reporter: &reporter, has_zscale: false };
+    let shots = screenshots::generate(&source, &info, &tmp.path().join("shots"), &ScreenshotsOptions {
+        count: 24, format: OutputFormat::Png, jpeg_quality: 92, suffix: String::new(),
+    }, &ctx).await.expect("all 24 screenshots must remain inside the delayed video's range");
+    assert_eq!(shots.len(), 24);
+    for shot in shots { assert_eq!(probe_wh(&tools.ffprobe, &shot).await, (96, 64)); }
+    let sheet = tmp.path().join("sheet.png");
+    contact_sheet::generate(&source, &info, &sheet, &SheetOptions {
+        cols: 6, rows: 4, width: 384, gap: 2, thumb_font_size: 14, header_font_size: 16,
+        show_timestamps: false, show_header: false, format: OutputFormat::Png, jpeg_quality: 92,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    }, &font_path(), &ctx).await.unwrap();
+    // Six even-rounded 60px thumbnails plus seven 2px gaps.
+    assert_eq!(probe_wh(&tools.ffprobe, &sheet).await.0, 374);
+    let animated = tmp.path().join("animated.webp");
+    animated_sheet::generate(&source, &info, &animated, &AnimatedSheetOptions {
+        cols: 6, rows: 4, width: 384, gap: 2, clip_length_secs: 1, fps: 4, quality: 60,
+        thumb_font_size: 14, header_font_size: 16, show_timestamps: false, show_header: false,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    }, &font_path(), &ctx).await.unwrap();
+    assert_animated_webp(&std::fs::read(animated).unwrap());
+    let reel = tmp.path().join("reel.webm");
+    preview_reel::generate(&source, &info, &reel, &PreviewOptions {
+        count: 24, clip_length_secs: 1, height: 64, fps: 4, quality: 60,
+        suffix: String::new(), format: ReelFormat::Webm,
+    }, &ctx).await.unwrap();
+    assert_eq!(probe_wh(&tools.ffprobe, &reel).await, (96, 64));
+    assert!((info.sampling_duration_secs() - (format_duration - expected_offset)).abs() < 1e-9);
+}
+
+/// Decode one animation frame as a standalone WebP: FFmpeg cannot demux
+/// animated WebP, but the ANMF payload holds ordinary image chunks.
+fn first_webp_frame(bytes: &[u8]) -> Vec<u8> {
+    let mut pos = 12;
+    while pos + 8 <= bytes.len() {
+        let size = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().unwrap()) as usize;
+        if &bytes[pos..pos + 4] == b"ANMF" {
+            let payload = &bytes[pos + 24..pos + 8 + size];
+            let mut still = b"RIFF".to_vec();
+            still.extend_from_slice(&((payload.len() + 4) as u32).to_le_bytes());
+            still.extend_from_slice(b"WEBP");
+            still.extend_from_slice(payload);
+            return still;
+        }
+        pos += 8 + size + size % 2;
+    }
+    bytes.to_vec() // A static WebP is already directly decodable.
+}
+
+fn average_pixel(ffmpeg: &std::path::Path, source: &std::path::Path) -> Vec<u8> {
+    let out = std::process::Command::new(ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-i"]).arg(source)
+        .args(["-frames:v", "1", "-vf", "scale=1:1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"])
+        .output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(out.stdout.len(), 3);
+    out.stdout
+}
+
+/// Stream 1 is the probe's small test pattern; automatic FFmpeg selection
+/// chooses stream 2 (larger, default, blue). Both timeline origins are nonzero.
+#[tokio::test]
+async fn selected_video_mapping_and_offsets_match_in_all_pipelines() {
+    let tools = mosaic_lib::ffmpeg_test_hook_locate().expect("media tools required");
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("multiple-videos.mp4");
+    let result = std::process::Command::new(&tools.ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=duration=8",
+            "-f", "lavfi", "-i", "testsrc2=s=96x64:r=12:d=4",
+            "-f", "lavfi", "-i", "color=blue:s=160x90:r=12:d=8",
+            "-map", "0:a", "-map", "1:v", "-map", "2:v", "-filter:v:0", "setpts=PTS+2/TB",
+            "-fps_mode:v:0", "passthrough", "-disposition:v:0", "0", "-disposition:v:1", "default",
+            "-c:v", "libx264", "-c:a", "aac", "-output_ts_offset", "5"])
+        .arg(&source).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let implicit = average_pixel(&tools.ffmpeg, &source);
+    assert!(implicit[2] > 200 && implicit[0] < 20, "automatic selection must be blue: {implicit:?}");
+    let probe = std::process::Command::new(&tools.ffprobe)
+        .args(["-v", "error", "-show_streams", "-show_format", "-of", "json"])
+        .arg(&source).output().unwrap();
+    assert!(probe.status.success(), "{}", String::from_utf8_lossy(&probe.stderr));
+    let raw: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+    let selected = &raw["streams"][1];
+    assert_eq!(selected["index"], 1);
+    assert_eq!(selected["codec_type"], "video");
+    assert_eq!(selected["nb_frames"], "48");
+    // Muxer versions report either the full 48/12 span or the last frame's
+    // timestamp (47/12). Permit only that one-frame boundary difference;
+    // the application must still use the exact reported selected duration.
+    let selected_duration: f64 = selected["duration"].as_str().unwrap().parse().unwrap();
+    assert!((selected_duration - 4.0).abs() <= 1.0 / 12.0 + 1e-6);
+    let selected_start: f64 = selected["start_time"].as_str().unwrap().parse().unwrap();
+    let format_start: f64 = raw["format"]["start_time"].as_str().unwrap().parse().unwrap();
+    assert_eq!(selected_start, 7.0);
+    assert!((format_start - 5.0).abs() < 0.05, "AAC origin must stay within 50ms of five seconds");
+    let info = mosaic_lib::ffmpeg_test_hook_probe(&tools, &source.to_string_lossy()).await.unwrap();
+    assert_eq!(info.video.index, 1);
+    assert_eq!(info.sampling_duration_secs(), selected_duration);
+    assert_eq!(info.video.start_secs, selected_start);
+    assert!((info.video.seek_offset_secs - (selected_start - format_start)).abs() < 1e-9);
+    let reporter = ProgressReporter { emit: &|_, _, _| {} };
+    let ctx = PipelineContext { ffmpeg: &tools.ffmpeg, cancelled: Arc::new(AtomicBool::new(false)), reporter: &reporter, has_zscale: false };
+    let sheet = tmp.path().join("sheet.png");
+    contact_sheet::generate(&source, &info, &sheet, &SheetOptions {
+        cols: 2, rows: 1, width: 192, gap: 2, thumb_font_size: 14, header_font_size: 16,
+        show_timestamps: false, show_header: false, format: OutputFormat::Png, jpeg_quality: 92,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    }, &font_path(), &ctx).await.unwrap();
+    let shots = screenshots::generate(&source, &info, &tmp.path().join("shots"), &ScreenshotsOptions {
+        count: 3, format: OutputFormat::Png, jpeg_quality: 92, suffix: String::new(),
+    }, &ctx).await.unwrap();
+    let animated = tmp.path().join("animated.webp");
+    animated_sheet::generate(&source, &info, &animated, &AnimatedSheetOptions {
+        cols: 2, rows: 1, width: 192, gap: 2, clip_length_secs: 1, fps: 4, quality: 60,
+        thumb_font_size: 14, header_font_size: 16, show_timestamps: false, show_header: false,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    }, &font_path(), &ctx).await.unwrap();
+    let bytes = std::fs::read(&animated).unwrap();
+    assert_animated_webp(&bytes);
+    let animated_frame = tmp.path().join("frame.webp");
+    std::fs::write(&animated_frame, first_webp_frame(&bytes)).unwrap();
+    let reel = tmp.path().join("reel.webm");
+    preview_reel::generate(&source, &info, &reel, &PreviewOptions {
+        count: 3, clip_length_secs: 1, height: 64, fps: 4, quality: 60,
+        suffix: String::new(), format: ReelFormat::Webm,
+    }, &ctx).await.unwrap();
+    for output in [&sheet, &animated_frame, &reel].into_iter().chain(shots.iter()) {
+        let pixel = average_pixel(&tools.ffmpeg, output);
+        assert!(u16::from(pixel[0]) + u16::from(pixel[1]) > u16::from(pixel[2]) + 50,
+            "{} must contain selected test pattern, not blue: {pixel:?}", output.display());
+    }
+    for shot in &shots { assert_eq!(probe_wh(&tools.ffprobe, shot).await, (96, 64)); }
+    // Offset seeking must select the intended frame, not just any frame from
+    // the right stream. Decode sequentially at the first of three evenly
+    // spaced samples, using independently probed timing rather than VideoInfo.
+    let reference_time = format!("{:.3}", selected_start + selected_duration / 4.0);
+    let reference = tmp.path().join("reference.png");
+    let result = std::process::Command::new(&tools.ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-copyts", "-i"]).arg(&source)
+        .args(["-map", "0:1", "-ss", &reference_time, "-frames:v", "1"]).arg(&reference).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert_eq!(std::fs::read(&shots[0]).unwrap(), std::fs::read(reference).unwrap());
+}
+
+struct TestEnv {
+    tools: mosaic_lib::ffmpeg::Tools,
+    fixture: PathBuf,
+    info: VideoInfo,
+    tmp: tempfile::TempDir,
+}
+
+impl TestEnv {
+    fn ctx<'a>(&'a self, reporter: &'a ProgressReporter<'a>) -> PipelineContext<'a> {
+        PipelineContext {
+            ffmpeg: &self.tools.ffmpeg,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            reporter,
+            has_zscale: self.tools.detect_caps().has_zscale(),
+        }
+    }
+}
+
+async fn setup(fixture_name: &str) -> Option<TestEnv> {
+    if which::which("ffmpeg").is_err() || which::which("ffprobe").is_err() {
+        eprintln!("skipping: ffmpeg/ffprobe not installed");
+        return None;
+    }
+    let fixture = fixture_path(fixture_name);
+    let tools = mosaic_lib::ffmpeg_test_hook_locate().expect("locate tools");
+    let info = mosaic_lib::ffmpeg_test_hook_probe(&tools, &fixture.to_string_lossy())
+        .await.expect("probe failed");
+    Some(TestEnv { tools, fixture, info, tmp: tempfile::tempdir().unwrap() })
+}
+
+/// End-to-end: run every pipeline on a bundled anamorphic fixture
+/// (1080×1080 + SAR 9:16) and verify each output preserves the displayed
+/// aspect (9:16 portrait). Exercises the full probe → scale → render path,
+/// not just the arg-builder logic the `tests::*` units cover.
+#[tokio::test]
+async fn all_pipelines_preserve_aspect_on_anamorphic_sample() {
+    let Some(env) = setup("anamorphic_sample.mp4").await else { return };
+    // SAR 9:16 on 1080×1080 → 1080 * 9/16 = 607.5 → round_even = 606.
+    assert_eq!((env.info.video.width, env.info.video.height), (606, 1080));
+    assert_eq!(env.info.video.sar, Some((9, 16)));
+
+    let font = font_path();
+    let reporter = ProgressReporter { emit: &|_, _, _| {} };
+    let ctx = env.ctx(&reporter);
+
+    let sheet_out = env.tmp.path().join("sheet.png");
+    let sheet_opts = SheetOptions {
+        cols: 2, rows: 2, width: 640, gap: 6,
+        thumb_font_size: 14, header_font_size: 16,
+        show_timestamps: false, show_header: false,
+        format: OutputFormat::Png, jpeg_quality: 92,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    };
+    contact_sheet::generate(&env.fixture, &env.info, &sheet_out, &sheet_opts, &font, &ctx)
+        .await.expect("static sheet failed");
+    let (sw, sh) = probe_wh(&env.tools.ffprobe, &sheet_out).await;
+    assert!(sh > sw, "static sheet should be portrait for anamorphic source, got {}×{}", sw, sh);
+
+    let shots_dir = env.tmp.path().join("shots");
+    let shots_opts = ScreenshotsOptions {
+        count: 2, format: OutputFormat::Png, jpeg_quality: 92, suffix: String::new(),
+    };
+    let shots = screenshots::generate(&env.fixture, &env.info, &shots_dir, &shots_opts, &ctx)
+        .await.expect("screenshots failed");
+    for shot in &shots {
+        let (w, h) = probe_wh(&env.tools.ffprobe, shot).await;
+        assert_eq!((w, h), (606, 1080), "screenshot {:?} has wrong dims {}×{}", shot, w, h);
+    }
+
+    let anim_out = env.tmp.path().join("anim.webp");
+    let anim_opts = AnimatedSheetOptions {
+        cols: 2, rows: 2, width: 640, gap: 6,
+        clip_length_secs: 1, fps: 8, quality: 60,
+        thumb_font_size: 14, header_font_size: 16,
+        show_timestamps: false, show_header: false,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    };
+    animated_sheet::generate(&env.fixture, &env.info, &anim_out, &anim_opts, &font, &ctx)
+        .await.expect("animated sheet failed");
+    let bytes = std::fs::read(&anim_out).unwrap();
+    assert_animated_webp(&bytes);
+    // ffprobe reports 0×0 for animated WebPs (no demuxer for the animation
+    // stream); read canvas dims directly from the VP8X chunk instead.
+    let (aw, ah) = webp_canvas_wh(&bytes);
+    assert!(ah > aw, "animated sheet should be portrait for anamorphic source, got {}×{}", aw, ah);
+
+    let reel_out = env.tmp.path().join("reel.webm");
+    let reel_opts = PreviewOptions {
+        count: 2, clip_length_secs: 1, height: 480, fps: 12, quality: 75,
+        suffix: String::new(), format: ReelFormat::Webm,
+    };
+    preview_reel::generate(&env.fixture, &env.info, &reel_out, &reel_opts, &ctx)
+        .await.expect("preview reel failed");
+    let (rw, rh) = probe_wh(&env.tools.ffprobe, &reel_out).await;
+    assert!(rh > rw, "reel should be portrait for anamorphic source, got {}×{}", rw, rh);
+    assert_eq!(rh, 480, "reel height should equal target; got {}", rh);
+}
+
+/// Regression guard: on a plain 16:9 landscape source, every pipeline must
+/// still produce landscape output at roughly the expected dims. Catches a
+/// bad displayed-dim swap / thumb_width inversion that would only show up
+/// when the source already had square pixels.
+#[tokio::test]
+async fn landscape_source_still_renders_landscape() {
+    let Some(env) = setup("landscape_4k_sample.mp4").await else { return };
+    // No rotation/SAR on a plain landscape source — displayed == encoded.
+    assert_eq!((env.info.video.width, env.info.video.height), (3840, 2160));
+    assert!(env.info.video.sar.is_none());
+    assert!(env.info.video.rotation.is_none());
+
+    let font = font_path();
+    let reporter = ProgressReporter { emit: &|_, _, _| {} };
+    let ctx = env.ctx(&reporter);
+
+    let sheet_out = env.tmp.path().join("sheet.png");
+    contact_sheet::generate(&env.fixture, &env.info, &sheet_out, &SheetOptions {
+        cols: 2, rows: 2, width: 640, gap: 4,
+        thumb_font_size: 14, header_font_size: 16,
+        show_timestamps: false, show_header: false,
+        format: OutputFormat::Png, jpeg_quality: 92,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    }, &font, &ctx).await.expect("sheet");
+    let (sw, sh) = probe_wh(&env.tools.ffprobe, &sheet_out).await;
+    assert!(sw > sh, "landscape source should stay landscape in sheet, got {}×{}", sw, sh);
+
+    let shots_dir = env.tmp.path().join("shots");
+    let shots = screenshots::generate(&env.fixture, &env.info, &shots_dir, &ScreenshotsOptions {
+        count: 1, format: OutputFormat::Png, jpeg_quality: 92, suffix: String::new(),
+    }, &ctx).await.expect("shots");
+    let (w, h) = probe_wh(&env.tools.ffprobe, &shots[0]).await;
+    assert_eq!((w, h), (3840, 2160), "landscape screenshot should be source res");
+}
+
+/// Extract canvas dimensions from an animated WebP's VP8X chunk header.
+/// Layout (RFC 9649 §2.5.2): after the 8-byte chunk header, 1 flags byte,
+/// 3 reserved bytes, 3 bytes canvas-width-minus-1 (little-endian), 3 bytes
+/// canvas-height-minus-1.
+fn webp_canvas_wh(bytes: &[u8]) -> (u32, u32) {
+    let pos = bytes.windows(4).position(|w| w == b"VP8X").expect("VP8X chunk");
+    let payload = &bytes[pos + 8..];
+    let w_minus_1 = u32::from(payload[4]) | (u32::from(payload[5]) << 8) | (u32::from(payload[6]) << 16);
+    let h_minus_1 = u32::from(payload[7]) | (u32::from(payload[8]) << 8) | (u32::from(payload[9]) << 16);
+    (w_minus_1 + 1, h_minus_1 + 1)
+}
+
+async fn probe_wh(ffprobe: &std::path::Path, path: &std::path::Path) -> (u32, u32) {
+    let args = ["-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height", "-of", "csv=p=0", &path.to_string_lossy()];
+    let out = std::process::Command::new(ffprobe).args(args).output().expect("ffprobe");
+    let s = String::from_utf8_lossy(&out.stdout);
+    let (w, h) = s.trim().split_once(',').expect("w,h csv");
+    (w.parse().unwrap(), h.parse().unwrap())
+}
+
+/// Assert bytes are a valid animated WebP: RIFF/WEBP container + VP8X chunk
+/// with the animation flag (bit 0x02 of the flags byte) set.
+fn assert_animated_webp(bytes: &[u8]) {
+    assert!(bytes.len() > 100, "webp suspiciously small: {} bytes", bytes.len());
+    assert_eq!(&bytes[0..4], b"RIFF", "missing RIFF magic");
+    assert_eq!(&bytes[8..12], b"WEBP", "missing WEBP marker");
+    let vp8x_pos = bytes.windows(4).position(|w| w == b"VP8X")
+        .expect("missing VP8X chunk — not an animated WebP");
+    let flags_byte = bytes[vp8x_pos + 8];
+    assert!(flags_byte & 0x02 != 0, "animation flag not set in VP8X flags byte: {:#04x}", flags_byte);
+}
+
+#[tokio::test]
+async fn end_to_end_contact_sheet_and_screenshots() {
+    let Some(env) = setup("sample.mp4").await else { return };
+    assert!(env.info.duration_secs > 1.0);
+
+    let font = font_path();
+    let reporter = ProgressReporter { emit: &|_, _, _| {} };
+    let ctx = env.ctx(&reporter);
+
+    let out = env.tmp.path().join("sample_contact_sheet.png");
+    let opts = SheetOptions {
+        cols: 2, rows: 2, width: 640, gap: 8,
+        thumb_font_size: 14, header_font_size: 16,
+        show_timestamps: true, show_header: true,
+        format: OutputFormat::Png, jpeg_quality: 92,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    };
+    contact_sheet::generate(&env.fixture, &env.info, &out, &opts, &font, &ctx).await.unwrap();
+    assert!(out.exists(), "sheet not written");
+    assert!(std::fs::metadata(&out).unwrap().len() > 1000);
+
+    let shots_dir = env.tmp.path().join("shots");
+    let shots_opts = ScreenshotsOptions {
+        count: 3, format: OutputFormat::Png, jpeg_quality: 92, suffix: String::new(),
+    };
+    let outs = screenshots::generate(&env.fixture, &env.info, &shots_dir, &shots_opts, &ctx).await.unwrap();
+    assert_eq!(outs.len(), 3);
+    for p in outs { assert!(p.exists()); }
+}
+
+#[tokio::test]
+async fn end_to_end_animated_preview_reel() {
+    let Some(env) = setup("sample.mp4").await else { return };
+    assert!(env.info.duration_secs > 1.0);
+
+    let reporter = ProgressReporter { emit: &|_, _, _| {} };
+    let ctx = env.ctx(&reporter);
+
+    let out = env.tmp.path().join("sample - reel.webp");
+    let opts = PreviewOptions {
+        count: 3, clip_length_secs: 1, height: 240, fps: 12, quality: 60,
+        suffix: String::new(), format: ReelFormat::Webp,
+    };
+    preview_reel::generate(&env.fixture, &env.info, &out, &opts, &ctx).await.unwrap();
+
+    assert!(out.exists(), "reel not written");
+    assert_animated_webp(&std::fs::read(&out).unwrap());
+}
+
+#[tokio::test]
+async fn end_to_end_animated_preview_reel_webm() {
+    let Some(env) = setup("sample.mp4").await else { return };
+
+    let reporter = ProgressReporter { emit: &|_, _, _| {} };
+    let ctx = env.ctx(&reporter);
+
+    let out = env.tmp.path().join("sample - reel.webm");
+    let opts = PreviewOptions {
+        count: 2, clip_length_secs: 1, height: 240, fps: 12, quality: 50,
+        suffix: String::new(), format: ReelFormat::Webm,
+    };
+    preview_reel::generate(&env.fixture, &env.info, &out, &opts, &ctx).await.unwrap();
+
+    assert!(out.exists(), "webm reel not written");
+    let bytes = std::fs::read(&out).unwrap();
+    assert!(bytes.len() > 100, "webm suspiciously small: {} bytes", bytes.len());
+    // WebM is a Matroska subset; first four bytes are the EBML header magic.
+    assert_eq!(&bytes[0..4], &[0x1A, 0x45, 0xDF, 0xA3], "missing EBML magic");
+}
+
+#[tokio::test]
+async fn end_to_end_animated_contact_sheet() {
+    let Some(env) = setup("sample.mp4").await else { return };
+
+    let font = font_path();
+    let reporter = ProgressReporter { emit: &|_, _, _| {} };
+    let ctx = env.ctx(&reporter);
+
+    let out = env.tmp.path().join("sample_animated_sheet.webp");
+    let opts = AnimatedSheetOptions {
+        cols: 2, rows: 2, width: 640, gap: 8,
+        clip_length_secs: 1, fps: 8, quality: 60,
+        thumb_font_size: 12, header_font_size: 14,
+        show_timestamps: true, show_header: true,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    };
+    animated_sheet::generate(&env.fixture, &env.info, &out, &opts, &font, &ctx).await.unwrap();
+
+    assert!(out.exists(), "animated sheet not written");
+    assert_animated_webp(&std::fs::read(&out).unwrap());
+}
+
+#[tokio::test]
+async fn end_to_end_animated_contact_sheet_no_header() {
+    let Some(env) = setup("sample.mp4").await else { return };
+
+    let font = font_path();
+    let reporter = ProgressReporter { emit: &|_, _, _| {} };
+    let ctx = env.ctx(&reporter);
+
+    let out = env.tmp.path().join("sample_bare.webp");
+    let opts = AnimatedSheetOptions {
+        cols: 2, rows: 2, width: 480, gap: 0,
+        clip_length_secs: 1, fps: 6, quality: 60,
+        thumb_font_size: 12, header_font_size: 14,
+        show_timestamps: false, show_header: false,
+        suffix: String::new(), theme: SheetTheme::Light,
+    };
+    animated_sheet::generate(&env.fixture, &env.info, &out, &opts, &font, &ctx).await.unwrap();
+
+    assert!(out.exists(), "bare animated sheet not written");
+    assert_animated_webp(&std::fs::read(&out).unwrap());
+}
+
+#[tokio::test]
+async fn end_to_end_animated_preview_reel_gif() {
+    let Some(env) = setup("sample.mp4").await else { return };
+
+    let reporter = ProgressReporter { emit: &|_, _, _| {} };
+    let ctx = env.ctx(&reporter);
+
+    let out = env.tmp.path().join("sample - reel.gif");
+    let opts = PreviewOptions {
+        count: 2, clip_length_secs: 1, height: 240, fps: 10,
+        quality: 0, // ignored for gif
+        suffix: String::new(), format: ReelFormat::Gif,
+    };
+    preview_reel::generate(&env.fixture, &env.info, &out, &opts, &ctx).await.unwrap();
+
+    assert!(out.exists(), "gif reel not written");
+    let bytes = std::fs::read(&out).unwrap();
+    assert!(bytes.len() > 100, "gif suspiciously small: {} bytes", bytes.len());
+    // GIF signature: "GIF87a" or "GIF89a" — both start with "GIF8".
+    assert_eq!(&bytes[0..4], b"GIF8", "missing GIF magic");
+}

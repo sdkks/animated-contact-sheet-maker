@@ -8,13 +8,8 @@ import { execSync, execFileSync } from "node:child_process";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
 
-const PACKAGE_JSON = resolve(root, "package.json");
-const TAURI_CONF = resolve(root, "src-tauri/tauri.conf.json");
-const CARGO_TOML = resolve(root, "src-tauri/Cargo.toml");
-const CARGO_LOCK = resolve(root, "src-tauri/Cargo.lock");
-const CLI_CARGO_TOML = resolve(root, "mosaic-cli/Cargo.toml");
-const CLI_CARGO_LOCK = resolve(root, "mosaic-cli/Cargo.lock");
-const SRC_INDEX = resolve(root, "src/index.html");
+const CARGO_TOML = resolve(root, "Cargo.toml");
+const CARGO_LOCK = resolve(root, "Cargo.lock");
 
 function bumpCargoToml(path, version) {
   let cargo = readFileSync(path, "utf8");
@@ -43,44 +38,17 @@ if (!SEMVER_RE.test(version)) {
   process.exit(1);
 }
 
-// Update package.json
-const pkg = JSON.parse(readFileSync(PACKAGE_JSON, "utf8"));
-pkg.version = version;
-writeFileSync(PACKAGE_JSON, JSON.stringify(pkg, null, 2) + "\n");
-console.log(`  package.json → ${version}`);
-
-// Update tauri.conf.json
-const tauri = JSON.parse(readFileSync(TAURI_CONF, "utf8"));
-tauri.version = version;
-writeFileSync(TAURI_CONF, JSON.stringify(tauri, null, 2) + "\n");
-console.log(`  tauri.conf.json → ${version}`);
-
 bumpCargoToml(CARGO_TOML, version);
-console.log(`  src-tauri/Cargo.toml → ${version}`);
+console.log(`  Cargo.toml → ${version}`);
 
-bumpCargoToml(CLI_CARGO_TOML, version);
-console.log(`  mosaic-cli/Cargo.toml → ${version}`);
-
-// Record only our own crates' new versions in the lockfiles. generate-lockfile
-// would re-resolve every dependency, so a release would ship untested upgrades.
-// mosaic-cli picks up src-tauri's new version via its path dep, so bump
-// src-tauri first.
-execSync("cargo update --workspace", { cwd: resolve(root, "src-tauri"), stdio: "inherit" });
-console.log(`  src-tauri/Cargo.lock updated`);
-execSync("cargo update --workspace", { cwd: resolve(root, "mosaic-cli"), stdio: "inherit" });
-console.log(`  mosaic-cli/Cargo.lock updated`);
+// Record only our own package's version; do not upgrade dependencies.
+execSync("cargo update --workspace", { cwd: root, stdio: "inherit" });
+console.log(`  Cargo.lock updated`);
 
 console.log(`\nVersion bumped to ${version}`);
 
-execSync("node scripts/sync-defaults.mjs", { cwd: root, stdio: "inherit" });
-
 if (shouldTag) {
-  const files = [
-    PACKAGE_JSON, TAURI_CONF,
-    CARGO_TOML, CARGO_LOCK,
-    CLI_CARGO_TOML, CLI_CARGO_LOCK,
-    SRC_INDEX,
-  ].map((f) => relative(root, f));
+  const files = [CARGO_TOML, CARGO_LOCK].map((f) => relative(root, f));
   // Use execFileSync (no shell) so a future file path with spaces or
   // glob metachars can't break quoting.
   execFileSync("git", ["add", "--", ...files], { cwd: root, stdio: "inherit" });

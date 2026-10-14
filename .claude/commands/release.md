@@ -1,144 +1,69 @@
 ---
-description: Cut a new Mosaic release — preflight checks, commit pending WIP, write changelog + release notes, bump version, tag, push.
+description: Cut a Mosaic CLI release — preflight, approved notes, version bump, commit, tag and confirmed push.
 argument-hint: <version> [--dry-run]
 ---
 
-You are running the Mosaic release pipeline. Follow these steps exactly, in order. Stop and ask the user if any step fails or if a precondition isn't met.
+Follow these steps in order. Arguments: **$ARGUMENTS**. Require a semver `X.Y.Z` or `X.Y.Z-pre`; ask rather than guessing. `--dry-run` performs local work including commit/tag, but skips every push and remote release verification. Announce this clearly.
 
-Arguments: **$ARGUMENTS**
+## 1. Resolve WIP
 
-Parse the arguments:
-- First positional arg is the version (semver: `X.Y.Z` or `X.Y.Z-pre`).
-- If `--dry-run` appears anywhere in the args, set `DRY_RUN=1` for the rest of this run. In dry-run mode, do everything locally but skip **both** `git push` calls. Announce dry-run mode clearly to the user at the start.
+Require branch `main`. Inspect `git status --short`, show any pending changes and draft a commit message from their actual diff. Obtain approval before staging explicit paths and committing. Do not include unrelated changes. Any push needs explicit confirmation, including WIP pushes.
 
-If the version is missing or not valid semver, stop and ask the user. Don't guess.
+Record the repository URL from `git remote get-url origin`, owner/repository from `gh repo view --json nameWithOwner`, and current date from `date +%Y-%m-%d`.
 
-Cache these values once at the top of the run (don't recompute them mid-flight):
-- `REPO_URL=$(git remote get-url origin | sed 's/\.git$//')` — base URL for compare links.
-- `OWNER_REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)` — e.g. `mosaicvideo/mosaic`.
-- `TODAY=$(date +%Y-%m-%d)` — real system date (do **not** use your internal date; it drifts).
+## 2. Blocking preflight
 
-## Step 1 — Resolve WIP
+- Require an `[Unreleased]` section in `CHANGELOG.md`.
+- Require the requested tag to be absent locally and remotely; do not force-delete an existing tag.
+- Fetch origin and require no commits in `HEAD..origin/main`; if behind, stop.
+- Require new commits since the last release tag.
+- Run these root checks, capturing complete output. Every check must pass:
 
-1. Run `git branch --show-current`. Must be `main`. Otherwise stop and ask.
-2. Run `git status --short`. If clean, note it and skip to Step 2.
-3. Show the user the WIP as a file-level summary, then draft a conventional-commit message inferred from the diff (`feat:` / `fix:` / `docs:` / `chore:` etc. — read the diff, don't guess from filenames). Show the drafted message to the user and **ask for approval or edits before committing**. Don't commit without an answer.
-4. On approval: `git add <specific files>` (list them by name, don't use `git add -A`), commit with the approved message, then `git push origin main` (skip the push in dry-run).
+```sh
+cargo check --locked --all-targets
+cargo clippy --locked -- -D warnings
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --locked --release
+actionlint .github/workflows/ci.yml .github/workflows/release.yml
+```
 
-## Step 2 — Preflight (blocking)
+On macOS prefix the test command with `PATH="/opt/homebrew/opt/ffmpeg-full/bin:$PATH"`. Tests require ffmpeg, ffprobe and mediainfo, including drawtext and WebP support. There is one package; all integration tests run without feature flags. Do not skip failing tests or silence warnings.
 
-Run these checks in order. Any failure aborts the release.
+## 3. Approve release notes
 
-1. **Branch:** already on `main` from Step 1.
-2. **CHANGELOG has `[Unreleased]` section:** `grep -q '^## \[Unreleased\]' CHANGELOG.md`. If missing, abort with a clear message asking the user to add one.
-3. **Tag doesn't exist locally:** `git tag -l v$VERSION` must be empty.
-4. **Tag doesn't exist on remote:** `git ls-remote --tags origin refs/tags/v$VERSION` must be empty. If either tag check fails, abort — don't offer to force-delete; the user needs to investigate why a tag with this version already exists.
-5. **Remote is in sync:** `git fetch origin` then `git rev-list HEAD..origin/main --count` must equal `0`. If not, abort — user needs to `git pull --rebase` and reconsider.
-6. **Verification gate:** run all of these from the repo root. **Every one must succeed** — do not proceed if any fails.
-   ```
-   (cd src-tauri && cargo check --all-targets)
-   (cd src-tauri && cargo clippy -- -D warnings)
-   (cd src-tauri && cargo clippy --all-targets --features test-api,cli -- -D warnings)
-   (cd src-tauri && PATH="/opt/homebrew/opt/ffmpeg-full/bin:$PATH" cargo test --features test-api)
-   (cd mosaic-cli && cargo clippy --all-targets -- -D warnings)
-   (cd mosaic-cli && PATH="/opt/homebrew/opt/ffmpeg-full/bin:$PATH" cargo test)
-   ```
-   This is deliberately the same set CI runs in `.github/workflows/ci.yml` — the release gate must not be weaker than CI, or you can tag a commit that CI would reject. Two things that look redundant but aren't: **both** clippy configurations are required (CLAUDE.md: the GUI-only default-feature build and the `test-api,cli` build lint differently, and a warning can exist in one and not the other), and `mosaic-cli` is a **separate crate** with its own clippy run and its own 34 tests — `cd src-tauri && cargo test` does not touch it.
+Read commits and relevant diffs since the previous tag. Draft user-facing Added/Fixed/Changed/Removed notes based on actual behavior, omitting version bumps and test-only work. Show the full draft and reasons for omissions. Obtain approval before writing notes.
 
-   The `--features test-api` run covers the plain `cargo test` unit tests as well, so there's no separate bare `cargo test` line. It also runs the integration tests that exercise real ffmpeg subprocesses. The `PATH` prefix is required on macOS because the default Homebrew `ffmpeg` bottle lacks libfreetype — the test suite needs `ffmpeg-full`. On Linux/Windows you can drop the `PATH` prefix; adapt if you're running this on a non-macOS machine.
+## 4. Write changelog and workflow notes
 
-   If any gate fails, abort. Do **not** offer to silence warnings, `--`-skip failing tests, or auto-fix — the user needs to decide how to handle real failures. (The v0.1.3 release had to be unwound once because the clippy gate was skipped; do not skip any gate.)
-7. **Commits since last tag exist:** `git log $(git describe --tags --abbrev=0)..HEAD --oneline` must be non-empty. If there's nothing new, abort — no point tagging an empty release.
+Insert the approved version/date entry below `[Unreleased]` and update compare links. In `.github/workflows/release.yml`, edit only the finalizer's `body: |` notes block; title and notes belong to the existing `softprops/action-gh-release` step, not a matrix job. Keep media-tool requirements, checksum guidance and accurate platform-signing notes. Do not add GUI download or auto-update instructions.
 
-## Step 3 — Draft release notes
+## 5. Bump and verify
 
-1. `PREV_TAG=$(git describe --tags --abbrev=0)`.
-2. List commits since that tag: `git log $PREV_TAG..HEAD --pretty=format:'%h %s' --no-merges`.
-3. Bucket each commit into **Added / Fixed / Changed / Removed** based on what actually changed for a user, not just the conventional-commit prefix. Content wins over prefix:
-   - A `chore:` that drops an installer flag → **Changed** (or **Removed**).
-   - A `feat:` that only adds a dev-only test fixture → drop entirely.
-   - A `refactor:` that changes visible behavior → belongs in **Changed**.
-   - `chore: bump version to X.Y.Z` → always drop from notes.
-   For each commit whose subject doesn't clearly describe the user impact, read the diff (`git show <sha> --stat` then the relevant file diffs) before writing the bullet.
-4. For each kept commit, write a plain-English, user-facing bullet. Explain the impact, not the implementation.
-5. Show the user the full draft (all four buckets + any dropped commits with a one-line reason each). Iterate on their edits until they approve. **Don't touch any file until they approve.**
+Run `node scripts/bump-version.mjs <version>` **without `--tag`**. This optional maintainer utility changes exactly root `Cargo.toml` and `Cargo.lock`, using `cargo update --workspace` to avoid dependency upgrades. Node is not required by application build/install/test.
 
-## Step 4 — Write the changelog entry
+Review the two version changes and confirm the `mosaic-cli` lockfile package entry matches the manifest. Re-run the preflight checks after these final input changes. Stage exactly:
 
-Edit `CHANGELOG.md`:
+```sh
+git add Cargo.toml Cargo.lock CHANGELOG.md .github/workflows/release.yml
+```
 
-1. Under `## [Unreleased]`, insert: `## [$VERSION] - $TODAY`.
-2. Populate with the approved buckets (omit empty ones).
-3. Update the link-reference footer:
-   - Change the `[unreleased]` line's compare URL from `$PREV_TAG...HEAD` to `v$VERSION...HEAD`.
-   - Insert `[$VERSION]: $REPO_URL/compare/$PREV_TAG...v$VERSION` in the correct position (newest first).
+Inspect `git status --short` and the staged diff; stop if relevant modifications are unstaged or unrelated changes are staged. Commit with the approved release message and create `v<version>` locally. Never force a tag.
 
-## Step 5 — Rewrite release.yml `releaseBody`
+## 6. Confirm push
 
-Edit `.github/workflows/release.yml`:
+Show commits about to ship, tag and Actions URL. Obtain explicit confirmation before pushing `main` and then `v<version>`. Skip both pushes in dry-run mode. If either fails, stop without force/retry tricks.
 
-1. Replace only the `releaseBody: |` block (and nothing outside it) with notes derived from the Step 3 draft, in the format already used:
-   - `## What's New` heading.
-   - `### Added` / `### Fixed` / `### Changed` subsections — same bullets as CHANGELOG, expanded slightly (bold lead phrase + explanation). These are intentionally richer than the CHANGELOG entries because they're the user's first-read when landing on the Releases page.
-   - `### Requirements` — keep the current ffmpeg + MediaInfo block verbatim unless the actual requirements changed. If they did, the user should have flagged this in Step 3.
-   - `### Notes` — update the Windows code-signing note if still accurate, and the "upgrading from vX.Y.Z?" pattern using `$PREV_TAG` as the reference.
+## 7. Verify and hand off
 
-## Step 6 — Bump, commit, tag
+After an authorized push, check the release workflow run. It builds only these CLI artifacts:
 
-1. Run `node scripts/bump-version.mjs $VERSION` **without** `--tag`. It writes **seven** files: `package.json`, `src-tauri/tauri.conf.json`, both `Cargo.toml`s, both `Cargo.lock`s (via `cargo update --workspace`, which touches only our own crates), and `src/index.html` (via the `sync-defaults.mjs` call at the end — often a no-op).
-2. Stage those seven plus the two files you edited by hand in Steps 4 and 5:
-   ```
-   git add package.json src-tauri/tauri.conf.json \
-           src-tauri/Cargo.toml src-tauri/Cargo.lock \
-           mosaic-cli/Cargo.toml mosaic-cli/Cargo.lock \
-           src/index.html \
-           CHANGELOG.md .github/workflows/release.yml
-   ```
-   **Do not trim this list.** `mosaic-cli` carries its own `version` field, and if it isn't staged the tag points at a tree where the CLI still says the *previous* version — CI then builds and signs `mosaic-cli` binaries that report the wrong version on a release that looks otherwise correct. Nobody notices until a user runs `mosaic-cli --version`. The authoritative list is the `files` array in `bump-version.mjs`'s `--tag` branch; if the script learns about a new file, add it here too.
-3. Confirm nothing the script touched was missed — `git status --short` must show no unstaged modifications:
-   ```
-   git status --short
-   ```
-   Any ` M` (unstaged) line at this point means the list above has drifted from the script again. Stop and reconcile before committing.
-4. Verify the bump actually landed in all four version sources:
-   ```
-   grep -m1 '"version"' package.json src-tauri/tauri.conf.json
-   grep -m1 '^version' src-tauri/Cargo.toml mosaic-cli/Cargo.toml
-   ```
-   All four must read `$VERSION`.
-5. Commit: `git commit -m "chore: release v$VERSION"` (single commit containing the bump + the changelog + the releaseBody update — everything the tag should point at).
-6. Tag: `git tag v$VERSION`.
+- `mosaic-cli-macos-universal` (Developer-ID signed and notarized)
+- `mosaic-cli-windows-x86_64.exe` (unsigned)
+- `mosaic-cli-windows-aarch64.exe` (unsigned)
+- `mosaic-cli-linux-x86_64` (GNU)
+- `mosaic-cli-linux-x86_64-musl` (static musl; native x86_64 build with Alpine smoke)
 
-## Step 7 — Push (confirmation gate)
+Verify all five artifacts, their `.sha256` companions and sorted `SHA256SUMS` are present. The finalizer supplies the release title/body. Provide Actions and Releases URLs. The release remains a **draft** until the human reviews notes and assets and chooses Publish. No updater metadata or desktop installers are expected.
 
-Tag push triggers the release workflow and is externally visible to anyone watching the repo. **Get explicit confirmation from the user before pushing**, even in non-dry-run mode. Show them:
-- The commits about to ship (`git log origin/main..HEAD --oneline`).
-- The tag name.
-- The Actions URL that will fire.
-
-On confirmation (skip entirely in dry-run mode):
-1. `git push origin main`
-2. `git push origin v$VERSION`
-
-If either push fails, stop and show the error — do **not** retry with force flags.
-
-## Step 8 — Verify + hand off
-
-1. `gh run list --workflow=release.yml --limit=1` to confirm the workflow queued.
-2. Print to the user:
-   - Actions run URL: `https://github.com/$OWNER_REPO/actions`.
-   - Releases page URL: `https://github.com/$OWNER_REPO/releases`.
-   - Reminder: the release is created as a **draft**. After the workflow finishes (~15 min; v0.1.5 took 13m42s, v0.1.6 15m9s), the user must open the release on GitHub, review the auto-filled notes against `CHANGELOG.md`, and click **Publish** — otherwise `/releases/latest/download/latest.json` won't resolve and the auto-updater can't find the new version.
-
-## Dry-run summary
-
-At the end of a dry-run, print a summary of:
-- What would have been committed and pushed.
-- The local tag that was created (advise the user to `git tag -d v$VERSION` and reset if they want to discard the dry-run artifacts).
-
-## Failure policy
-
-- Any failing command aborts. Do not retry destructive operations with force flags.
-- Do not skip preflight checks "just this once."
-- Do not silence clippy / check warnings; the user needs to see and decide.
-- If you're unsure whether a bullet belongs in the release notes, ask — don't guess.
+In dry-run mode report the local commit/tag and that nothing was pushed; do not silently clean them up. Any failing command aborts the release. Never skip a gate or access signing secrets to make a check pass.
