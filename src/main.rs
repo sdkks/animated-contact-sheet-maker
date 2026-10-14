@@ -66,7 +66,7 @@ async fn main() {
         cli::Command::Probe(_)         => false,
         cli::Command::Completions(_) | cli::Command::Manpage => unreachable!("handled above"),
     };
-    mosaic_lib::ffmpeg::set_verbose(verbose);
+    acsm::ffmpeg::set_verbose(verbose);
 
     let code = match parsed.command {
         cli::Command::Screenshots(a)   => run::screenshots::run(a, &cfg).await,

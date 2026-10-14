@@ -1,7 +1,5 @@
-/target/
+**/target/
 node_modules/
-src-tauri/target/
-mosaic-cli/target/
 dist/
 .DS_Store
 *.log

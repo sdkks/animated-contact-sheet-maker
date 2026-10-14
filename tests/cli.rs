@@ -1,4 +1,4 @@
-// Integration tests for mosaic-cli via assert_cmd. Uses the shared
+// Integration tests for acsm via assert_cmd. Uses the shared
 // fixture and writes outputs into TempDir-scoped directories so tests are hermetic.
 
 use assert_cmd::Command;
@@ -12,11 +12,52 @@ fn sample() -> std::path::PathBuf {
 }
 
 fn bin() -> Command {
-    let mut cmd = Command::cargo_bin("mosaic-cli").unwrap();
+    let mut cmd = Command::cargo_bin("acsm").unwrap();
     // Isolate config file so real $HOME isn't touched.
-    let tmp = std::env::temp_dir().join(format!("mosaic-cli-test-{}.toml", std::process::id()));
-    cmd.env("MOSAIC_CLI_CONFIG", tmp);
+    let tmp = std::env::temp_dir().join(format!("acsm-test-{}.toml", std::process::id()));
+    cmd.env("ACSM_CONFIG", tmp);
     cmd
+}
+
+#[test]
+fn product_identity_is_consistent() {
+    assert_eq!(env!("CARGO_PKG_NAME"), "acsm");
+    bin().arg("--version").assert().success()
+        .stdout(format!("acsm {}\n", env!("CARGO_PKG_VERSION")));
+    bin().arg("--help").assert().success()
+        .stdout(predicate::str::contains("Usage: acsm"))
+        .stdout(predicate::str::contains("~/.acsm.toml"))
+        .stdout(predicate::str::contains("ACSM_CONFIG"))
+        .stdout(predicate::str::contains("https://github.com/sdkks/animated-contact-sheet-maker"));
+}
+
+#[test]
+fn default_config_is_created_in_isolated_home() {
+    let home = TempDir::new().unwrap();
+    let mut cmd = Command::cargo_bin("acsm").unwrap();
+    cmd.env_remove("ACSM_CONFIG")
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .arg("probe").arg(sample()).assert().success();
+    let config = fs::read_to_string(home.path().join(".acsm.toml")).unwrap();
+    assert!(config.starts_with("# ~/.acsm.toml — per-user defaults for acsm."));
+}
+
+#[test]
+fn tool_free_commands_use_acsm_without_creating_config() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("unused.toml");
+    for args in [
+        vec!["--help"], vec!["--version"], vec!["manpage"],
+        vec!["completions", "bash"], vec!["completions", "zsh"],
+        vec!["completions", "fish"], vec!["completions", "powershell"],
+        vec!["completions", "elvish"],
+    ] {
+        bin().env("ACSM_CONFIG", &config).env("PATH", "")
+            .args(args).assert().success()
+            .stdout(predicate::str::contains("acsm"));
+    }
+    assert!(!config.exists());
 }
 
 #[test]
@@ -87,12 +128,12 @@ fn animated_sheet_produces_webp() {
 #[test]
 fn config_file_provides_default() {
     let cfg_dir = TempDir::new().unwrap();
-    let cfg_path = cfg_dir.path().join(".mosaic-cli.toml");
+    let cfg_path = cfg_dir.path().join(".acsm.toml");
     fs::write(&cfg_path, "[sheet]\nsuffix = \"_fromconfig\"\n").unwrap();
 
     let out = TempDir::new().unwrap();
-    let mut cmd = Command::cargo_bin("mosaic-cli").unwrap();
-    cmd.env("MOSAIC_CLI_CONFIG", &cfg_path)
+    let mut cmd = Command::cargo_bin("acsm").unwrap();
+    cmd.env("ACSM_CONFIG", &cfg_path)
         .args(["sheet", "--cols", "2", "--rows", "2", "-o"]).arg(out.path()).arg(sample())
         .assert().success();
 
@@ -109,12 +150,12 @@ fn config_file_provides_default() {
 #[test]
 fn cli_flag_overrides_config() {
     let cfg_dir = TempDir::new().unwrap();
-    let cfg_path = cfg_dir.path().join(".mosaic-cli.toml");
+    let cfg_path = cfg_dir.path().join(".acsm.toml");
     fs::write(&cfg_path, "[sheet]\nsuffix = \"_fromconfig\"\n").unwrap();
 
     let out = TempDir::new().unwrap();
-    let mut cmd = Command::cargo_bin("mosaic-cli").unwrap();
-    cmd.env("MOSAIC_CLI_CONFIG", &cfg_path)
+    let mut cmd = Command::cargo_bin("acsm").unwrap();
+    cmd.env("ACSM_CONFIG", &cfg_path)
         .args(["sheet", "--cols", "2", "--rows", "2", "--suffix", "_fromflag", "-o"])
         .arg(out.path()).arg(sample())
         .assert().success();
@@ -136,12 +177,12 @@ fn cli_flag_overrides_config() {
 #[test]
 fn builtin_defaults_used_when_config_empty() {
     let cfg_dir = TempDir::new().unwrap();
-    let cfg_path = cfg_dir.path().join(".mosaic-cli.toml");
+    let cfg_path = cfg_dir.path().join(".acsm.toml");
     fs::write(&cfg_path, "# empty\n").unwrap();
 
     let out = TempDir::new().unwrap();
-    let mut cmd = Command::cargo_bin("mosaic-cli").unwrap();
-    cmd.env("MOSAIC_CLI_CONFIG", &cfg_path)
+    let mut cmd = Command::cargo_bin("acsm").unwrap();
+    cmd.env("ACSM_CONFIG", &cfg_path)
         .args(["sheet", "--cols", "2", "--rows", "2", "-o"]).arg(out.path()).arg(sample())
         .assert().success();
 
@@ -158,11 +199,11 @@ fn builtin_defaults_used_when_config_empty() {
 #[test]
 fn first_run_creates_config() {
     let cfg_dir = TempDir::new().unwrap();
-    let cfg_path = cfg_dir.path().join(".mosaic-cli.toml");
+    let cfg_path = cfg_dir.path().join(".acsm.toml");
     assert!(!cfg_path.exists());
 
-    let mut cmd = Command::cargo_bin("mosaic-cli").unwrap();
-    cmd.env("MOSAIC_CLI_CONFIG", &cfg_path)
+    let mut cmd = Command::cargo_bin("acsm").unwrap();
+    cmd.env("ACSM_CONFIG", &cfg_path)
         .args(["probe"]).arg(sample())
         .assert().success();
     assert!(cfg_path.exists(), "config template should be auto-created on first run");
@@ -227,7 +268,7 @@ fn completions_fish_emits_complete() {
         .args(["completions", "fish"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("complete -c mosaic-cli"));
+        .stdout(predicate::str::contains("complete -c acsm"));
 }
 
 #[test]

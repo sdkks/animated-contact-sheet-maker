@@ -174,7 +174,7 @@ impl FfmpegCaps {
 pub fn missing_message(ffmpeg: &std::path::Path, missing: &[Need]) -> String {
     let list = missing.iter().map(|n| n.describe()).collect::<Vec<_>>().join(", ");
     let fix = if cfg!(target_os = "macos") {
-        "Install a full build with `brew install ffmpeg-full`; Mosaic picks it up automatically."
+        "Install a full build with `brew install ffmpeg-full`; ACSM picks it up automatically."
     } else {
         "Install an ffmpeg build that includes them."
     };
@@ -403,7 +403,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 
-/// Enable argv-print-before-spawn globally (used by `mosaic-cli --verbose`).
+/// Enable argv-print-before-spawn globally (used by `acsm --verbose`).
 #[allow(dead_code)]
 pub fn set_verbose(on: bool) {
     VERBOSE.store(on, Ordering::Relaxed);

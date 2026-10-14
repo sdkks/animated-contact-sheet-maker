@@ -14,7 +14,7 @@ pub fn configure(path: &Path) -> io::Result<()> {
     // and read-only mounts can disagree with those). Remove the probes immediately.
     let probe = tempfile::TempDir::new_in(&path)?;
     let mut file = tempfile::NamedTempFile::new_in(probe.path())?;
-    file.write_all(b"mosaic temporary storage check")?;
+    file.write_all(b"acsm temporary storage check")?;
     file.flush()?;
     file.close()?;
     probe.close()?;

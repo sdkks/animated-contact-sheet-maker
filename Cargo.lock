@@ -360,8 +360,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "mosaic-cli"
-version = "0.1.8"
+name = "acsm"
+version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",

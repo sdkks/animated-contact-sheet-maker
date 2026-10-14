@@ -3,7 +3,7 @@ use crate::cli::ScreenshotsArgs;
 use crate::config::Config;
 use crate::progress::Reporter;
 use crate::run::{format::resolve_img_format, inputs};
-use mosaic_lib::{
+use acsm::{
     defaults,
     ffmpeg::RunError,
     ffmpeg_test_hook_locate, ffmpeg_test_hook_probe,

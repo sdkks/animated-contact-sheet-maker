@@ -44,8 +44,8 @@ jobs:
 
       - name: Install smoke test
         run: |
-          cargo install --path . --locked --root "$RUNNER_TEMP/mosaic-install"
-          "$RUNNER_TEMP/mosaic-install/bin/mosaic-cli" --help
+          cargo install --path . --locked --root "$RUNNER_TEMP/acsm-install"
+          "$RUNNER_TEMP/acsm-install/bin/acsm" --help
 
   # Build on native x86_64, not under local architecture emulation.
   musl:
@@ -74,36 +74,36 @@ jobs:
       - name: Build standalone musl CLI
         run: |
           cargo build --locked --release --target x86_64-unknown-linux-musl
-          cp target/x86_64-unknown-linux-musl/release/mosaic-cli mosaic-cli-linux-x86_64-musl
-          strip mosaic-cli-linux-x86_64-musl
+          cp target/x86_64-unknown-linux-musl/release/acsm acsm-linux-x86_64-musl
+          strip acsm-linux-x86_64-musl
 
       - name: Verify static linkage and Alpine runtime
         run: |
-          readelf -l mosaic-cli-linux-x86_64-musl > "$RUNNER_TEMP/program-headers.txt"
-          readelf -d mosaic-cli-linux-x86_64-musl > "$RUNNER_TEMP/dynamic-section.txt"
+          readelf -l acsm-linux-x86_64-musl > "$RUNNER_TEMP/program-headers.txt"
+          readelf -d acsm-linux-x86_64-musl > "$RUNNER_TEMP/dynamic-section.txt"
           if grep -q INTERP "$RUNNER_TEMP/program-headers.txt" || grep -q NEEDED "$RUNNER_TEMP/dynamic-section.txt"; then
             echo 'musl CLI must not require a dynamic loader or shared libraries' >&2
             exit 1
           fi
           docker run --rm -v "$PWD:/input:ro" alpine:3.19 sh -ec '
-            /input/mosaic-cli-linux-x86_64-musl --help
+            /input/acsm-linux-x86_64-musl --help
             apk add --no-cache ffmpeg mediainfo
-            export MOSAIC_CLI_CONFIG=/tmp/mosaic.toml
-            /input/mosaic-cli-linux-x86_64-musl probe /input/tests/fixtures/sample.mp4
-            /input/mosaic-cli-linux-x86_64-musl sheet /input/tests/fixtures/sample.mp4 --cols 2 --rows 1 -o /tmp/smoke
+            export ACSM_CONFIG=/tmp/acsm.toml
+            /input/acsm-linux-x86_64-musl probe /input/tests/fixtures/sample.mp4
+            /input/acsm-linux-x86_64-musl sheet /input/tests/fixtures/sample.mp4 --cols 2 --rows 1 -o /tmp/smoke
             test -n "$(find /tmp/smoke -type f -size +0c)"
           '
 
       - name: Checksum artifact
-        run: sha256sum mosaic-cli-linux-x86_64-musl > mosaic-cli-linux-x86_64-musl.sha256
+        run: sha256sum acsm-linux-x86_64-musl > acsm-linux-x86_64-musl.sha256
 
       - name: Upload downloadable musl CLI
         uses: actions/upload-artifact@v4
         with:
-          name: mosaic-cli-linux-x86_64-musl
+          name: acsm-linux-x86_64-musl
           path: |
-            mosaic-cli-linux-x86_64-musl
-            mosaic-cli-linux-x86_64-musl.sha256
+            acsm-linux-x86_64-musl
+            acsm-linux-x86_64-musl.sha256
           if-no-files-found: error
 
   # Lint and link on Windows: MSVC linking (static C runtime) and
@@ -132,5 +132,5 @@ jobs:
       - name: Clippy (all targets)
         run: cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Build mosaic-cli
+      - name: Build acsm
         run: cargo build --locked

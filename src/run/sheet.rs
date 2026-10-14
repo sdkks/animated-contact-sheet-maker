@@ -4,7 +4,7 @@ use crate::config::Config;
 use crate::font;
 use crate::progress::Reporter;
 use crate::run::{format::{resolve_bool, resolve_img_format, resolve_theme}, inputs};
-use mosaic_lib::{
+use acsm::{
     contact_sheet::{generate, SheetOptions},
     defaults,
     ffmpeg::{RunError},

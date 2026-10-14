@@ -1,8 +1,8 @@
 // src/run/format.rs
-// Shared conversions between CLI clap enums and mosaic_lib's
+// Shared conversions between CLI clap enums and acsm's
 // OutputFormat / ReelFormat / SheetTheme — used by multiple subcommands.
 
-use mosaic_lib::output_path::{OutputFormat, ReelFormat, SheetTheme};
+use acsm::output_path::{OutputFormat, ReelFormat, SheetTheme};
 
 pub fn resolve_img_format(arg: &Option<crate::cli::ImgFormat>, cfg: Option<&str>, fallback: &str) -> OutputFormat {
     match arg {

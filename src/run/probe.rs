@@ -1,6 +1,6 @@
 // src/run/probe.rs
 use crate::cli::ProbeArgs;
-use mosaic_lib::{ffmpeg_test_hook_locate, ffmpeg_test_hook_probe};
+use acsm::{ffmpeg_test_hook_locate, ffmpeg_test_hook_probe};
 use serde_json::json;
 
 pub async fn run(args: ProbeArgs) -> i32 {
@@ -25,7 +25,7 @@ pub async fn run(args: ProbeArgs) -> i32 {
         let path_str = args.input.to_string_lossy();
         // Second invocation: fetch human-readable mediainfo for the wrapped output.
         // The first (inside the library's `probe::probe`) runs --Output=JSON for enrichment.
-        let mi = match mosaic_lib::ffmpeg::run_capture(tools.mediainfo.as_path(), &[path_str.as_ref()]).await {
+        let mi = match acsm::ffmpeg::run_capture(tools.mediainfo.as_path(), &[path_str.as_ref()]).await {
             Ok(s) => s,
             Err(e) => { eprintln!("mediainfo: {e}"); return 1; }
         };

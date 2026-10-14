@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 pub fn expand(inputs: &[PathBuf], recursive: bool) -> Result<Vec<PathBuf>, String> {
     let mut out = Vec::new();
     for p in inputs {
-        let found = mosaic_lib::input_scan::scan(Path::new(p), recursive)?;
+        let found = acsm::input_scan::scan(Path::new(p), recursive)?;
         out.extend(found);
     }
     // Pragmatic stopgap: reject non-UTF-8 paths early with a clear error

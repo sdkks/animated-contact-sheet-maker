@@ -4,8 +4,8 @@ use std::fs;
 use tempfile::TempDir;
 
 fn bin(root: &TempDir) -> Command {
-    let mut cmd = Command::cargo_bin("mosaic-cli").unwrap();
-    cmd.env("MOSAIC_CLI_CONFIG", root.path().join("config.toml"));
+    let mut cmd = Command::cargo_bin("acsm").unwrap();
+    cmd.env("ACSM_CONFIG", root.path().join("config.toml"));
     cmd
 }
 
@@ -44,7 +44,7 @@ fn tmp_dir_routes_all_renderers_and_embedded_font() {
             .success();
         let stderr = String::from_utf8_lossy(&result.get_output().stderr);
         let scratch_prefix = format!("{}{}", scratch.display(), std::path::MAIN_SEPARATOR);
-        let font_prefix = mosaic_lib::drawtext::font_for_ffmpeg(std::path::Path::new(&scratch_prefix));
+        let font_prefix = acsm::drawtext::font_for_ffmpeg(std::path::Path::new(&scratch_prefix));
         let render_lines: Vec<_> = stderr
             .lines()
             .filter(|line| {

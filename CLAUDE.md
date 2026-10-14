@@ -2,7 +2,7 @@
 
 ## Commands
 
-This is one root Cargo package, `mosaic-cli`, with the implementation library `mosaic_lib`. Run all commands from the repository root:
+This is one root Cargo package, `acsm`, with the implementation library `acsm`. Run all commands from the repository root:
 
 - Development: `cargo run --locked -- <subcommand> [args]`
 - Build: `cargo build --locked --release`
@@ -31,7 +31,7 @@ Integration tests need ffmpeg with drawtext, libwebp and the other pipeline enco
 
 **Tools and capabilities.** `locate_tools()` resolves ffmpeg, ffprobe, mediainfo, preferring ffmpeg-full on macOS before PATH/Homebrew fallbacks. All three are required. Each options struct has `validate()` and `needs()`; CLI calls these before rendering. Add any newly needed encoder/filter to `ffmpeg::Need` and the relevant `needs()`. Preserve zscale-dependent HDR handling and MediaInfo enrichment fallbacks.
 
-**Defaults and CLI identity.** `defaults.rs` is the source of shipping option defaults. Keep binary name `mosaic-cli`, config `~/.mosaic-cli.toml`, override `MOSAIC_CLI_CONFIG`, CLI-over-config precedence, stdout paths/JSON and stderr progress/errors. `input_scan.rs` owns folder scanning and its canonical extension list. Do not duplicate scanning. Global `--tmp-dir` uses tempfile's existing process-wide override; keep validation before config/tool work. Font bytes in `assets/fonts/DejaVuSans.ttf` are embedded via `src/font.rs`; retain font licensing notices with the asset.
+**Defaults and CLI identity.** `defaults.rs` is the source of shipping option defaults. Keep binary name `acsm`, config `~/.acsm.toml`, override `ACSM_CONFIG`, CLI-over-config precedence, stdout paths/JSON and stderr progress/errors. `input_scan.rs` owns folder scanning and its canonical extension list. Do not duplicate scanning. Global `--tmp-dir` uses tempfile's existing process-wide override; keep validation before config/tool work. Font bytes in `assets/fonts/DejaVuSans.ttf` are embedded via `src/font.rs`; retain font licensing notices with the asset.
 
 **Tool-free commands.** Help, `completions <shell>` and `manpage` work without config access, temporary-directory validation or media tools. Completions/manpage use runtime clap introspection, not generated build assets.
 
@@ -45,6 +45,6 @@ Optional maintainer utility: `node scripts/bump-version.mjs <version> [--tag]` u
 
 ## Separate and local content
 
-The showcase site and installer scripts live in separate repo `mosaicvideo/mosaicvideo.github.io`; do not recreate them here. `docs/` is ignored local-only maintainer material, absent from fresh clones. Do not recreate missing local design docs or remove ignored caches left by previous package layouts. Preserve `AGENT.md` as a symlink to this file.
+Project documentation lives at `https://github.com/sdkks/animated-contact-sheet-maker`; do not recreate a separate showcase site or installer scripts here. `docs/` is ignored local-only maintainer material, absent from fresh clones. Do not recreate missing local design docs or remove ignored caches left by previous package layouts. Preserve `AGENT.md` as a symlink to this file.
 
 Test media reference: https://kodi.wiki/view/Samples

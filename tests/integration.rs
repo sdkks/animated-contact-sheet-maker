@@ -2,13 +2,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use mosaic_lib::animated_sheet::{self, AnimatedSheetOptions};
-use mosaic_lib::contact_sheet::{self, SheetOptions};
-use mosaic_lib::jobs::{PipelineContext, ProgressReporter};
-use mosaic_lib::output_path::{OutputFormat, ReelFormat, SheetTheme};
-use mosaic_lib::preview_reel::{self, PreviewOptions};
-use mosaic_lib::screenshots::{self, ScreenshotsOptions};
-use mosaic_lib::video_info::VideoInfo;
+use acsm::animated_sheet::{self, AnimatedSheetOptions};
+use acsm::contact_sheet::{self, SheetOptions};
+use acsm::jobs::{PipelineContext, ProgressReporter};
+use acsm::output_path::{OutputFormat, ReelFormat, SheetTheme};
+use acsm::preview_reel::{self, PreviewOptions};
+use acsm::screenshots::{self, ScreenshotsOptions};
+use acsm::video_info::VideoInfo;
 
 fn fixture_path(name: &str) -> PathBuf {
     [env!("CARGO_MANIFEST_DIR"), "tests", "fixtures", name].iter().collect()
@@ -22,7 +22,7 @@ fn font_path() -> PathBuf {
 /// The text and font bytes are identical; only option-path escaping differs.
 #[test]
 fn literal_header_textfiles_render_with_punctuation_paths() {
-    use mosaic_lib::drawtext::{font_for_ffmpeg, header_overlay};
+    use acsm::drawtext::{font_for_ffmpeg, header_overlay};
     let ffmpeg = which::which("ffmpeg").expect("ffmpeg with drawtext required");
     let root = tempfile::tempdir().unwrap();
     #[cfg(unix)]
@@ -68,7 +68,7 @@ fn literal_header_textfiles_render_with_punctuation_paths() {
 #[tokio::test]
 async fn both_header_pipelines_render_literal_synthetic_filename_and_cancel() {
     use std::sync::atomic::Ordering;
-    let tools = mosaic_lib::ffmpeg_test_hook_locate().expect("media tools required");
+    let tools = acsm::ffmpeg_test_hook_locate().expect("media tools required");
     let tmp = tempfile::tempdir().unwrap();
     #[cfg(unix)]
     let filename = r"Miki's ☆ : \ [x],; 50% %{pts}.mp4";
@@ -80,7 +80,7 @@ async fn both_header_pipelines_render_literal_synthetic_filename_and_cancel() {
             "color=black:s=160x90:r=8:d=3", "-c:v", "libx264"])
         .arg(&source).output().unwrap();
     assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
-    let mut info = mosaic_lib::ffmpeg_test_hook_probe(&tools, &source.to_string_lossy()).await.unwrap();
+    let mut info = acsm::ffmpeg_test_hook_probe(&tools, &source.to_string_lossy()).await.unwrap();
     // Include untrusted metadata fields as well as the filename.
     info.video.profile = Some("it's [a],; profile: 50% ☆".into());
     let sheet = SheetOptions {
@@ -107,7 +107,7 @@ async fn both_header_pipelines_render_literal_synthetic_filename_and_cancel() {
         let out = tmp.path().join(format!("sheet-{cancel_at_header}.png"));
         let result = contact_sheet::generate(&source, &info, &out, &sheet, &font_path(), &ctx).await;
         if cancel_at_header {
-            assert!(matches!(result, Err(mosaic_lib::ffmpeg::RunError::Killed)));
+            assert!(matches!(result, Err(acsm::ffmpeg::RunError::Killed)));
             assert!(!out.exists());
         } else {
             result.unwrap();
@@ -117,7 +117,7 @@ async fn both_header_pipelines_render_literal_synthetic_filename_and_cancel() {
         let out = tmp.path().join(format!("animated-{cancel_at_header}.webp"));
         let result = animated_sheet::generate(&source, &info, &out, &animated, &font_path(), &ctx).await;
         if cancel_at_header {
-            assert!(matches!(result, Err(mosaic_lib::ffmpeg::RunError::Killed)));
+            assert!(matches!(result, Err(acsm::ffmpeg::RunError::Killed)));
             assert!(!out.exists());
         } else {
             result.unwrap();
@@ -129,7 +129,7 @@ async fn both_header_pipelines_render_literal_synthetic_filename_and_cancel() {
 /// Audio can outlive video; every sampled cell must still contain video.
 #[tokio::test]
 async fn selected_video_shorter_than_audio_renders_all_pipelines() {
-    let tools = mosaic_lib::ffmpeg_test_hook_locate().expect("media tools required");
+    let tools = acsm::ffmpeg_test_hook_locate().expect("media tools required");
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("short-video.mp4");
     let result = std::process::Command::new(&tools.ffmpeg)
@@ -138,7 +138,7 @@ async fn selected_video_shorter_than_audio_renders_all_pipelines() {
             "-c:v", "libx264", "-c:a", "aac"])
         .arg(&source).output().unwrap();
     assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
-    let info = mosaic_lib::ffmpeg_test_hook_probe(&tools, &source.to_string_lossy()).await.unwrap();
+    let info = acsm::ffmpeg_test_hook_probe(&tools, &source.to_string_lossy()).await.unwrap();
     assert!(info.duration_secs >= 8.0, "container metadata remains unchanged");
     let reporter = ProgressReporter { emit: &|_, _, _| {} };
     let ctx = PipelineContext { ffmpeg: &tools.ffmpeg, cancelled: Arc::new(AtomicBool::new(false)), reporter: &reporter, has_zscale: false };
@@ -169,7 +169,7 @@ async fn selected_video_shorter_than_audio_renders_all_pipelines() {
 /// be shortened by the delayed video's origin before sampling all 24 cells.
 #[tokio::test]
 async fn selected_video_delayed_mkv_container_fallback_renders_all_pipelines() {
-    let tools = mosaic_lib::ffmpeg_test_hook_locate().expect("media tools required");
+    let tools = acsm::ffmpeg_test_hook_locate().expect("media tools required");
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("delayed.mkv");
     let result = std::process::Command::new(&tools.ffmpeg)
@@ -195,12 +195,12 @@ async fn selected_video_delayed_mkv_container_fallback_renders_all_pipelines() {
     assert!(format_start.abs() < 0.05, "AAC origin must stay within 50ms of zero");
     assert!((format_duration - 10.0).abs() < 0.05);
     let expected_offset = video_start - format_start;
-    let info = mosaic_lib::ffmpeg_test_hook_probe(&tools, &source.to_string_lossy()).await.unwrap();
+    let info = acsm::ffmpeg_test_hook_probe(&tools, &source.to_string_lossy()).await.unwrap();
     assert_eq!(info.video.duration_secs, None);
     assert_eq!(info.video.start_secs, video_start);
     assert!((info.video.seek_offset_secs - expected_offset).abs() < 1e-9);
     assert_eq!(info.duration_secs, format_duration);
-    assert_eq!(info.duration_source, mosaic_lib::video_info::DurationSource::Container);
+    assert_eq!(info.duration_source, acsm::video_info::DurationSource::Container);
     assert!(info.require_seekable().is_ok());
     let reporter = ProgressReporter { emit: &|_, _, _| {} };
     let ctx = PipelineContext { ffmpeg: &tools.ffmpeg, cancelled: Arc::new(AtomicBool::new(false)), reporter: &reporter, has_zscale: false };
@@ -266,7 +266,7 @@ fn average_pixel(ffmpeg: &std::path::Path, source: &std::path::Path) -> Vec<u8> 
 /// chooses stream 2 (larger, default, blue). Both timeline origins are nonzero.
 #[tokio::test]
 async fn selected_video_mapping_and_offsets_match_in_all_pipelines() {
-    let tools = mosaic_lib::ffmpeg_test_hook_locate().expect("media tools required");
+    let tools = acsm::ffmpeg_test_hook_locate().expect("media tools required");
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("multiple-videos.mp4");
     let result = std::process::Command::new(&tools.ffmpeg)
@@ -298,7 +298,7 @@ async fn selected_video_mapping_and_offsets_match_in_all_pipelines() {
     let format_start: f64 = raw["format"]["start_time"].as_str().unwrap().parse().unwrap();
     assert_eq!(selected_start, 7.0);
     assert!((format_start - 5.0).abs() < 0.05, "AAC origin must stay within 50ms of five seconds");
-    let info = mosaic_lib::ffmpeg_test_hook_probe(&tools, &source.to_string_lossy()).await.unwrap();
+    let info = acsm::ffmpeg_test_hook_probe(&tools, &source.to_string_lossy()).await.unwrap();
     assert_eq!(info.video.index, 1);
     assert_eq!(info.sampling_duration_secs(), selected_duration);
     assert_eq!(info.video.start_secs, selected_start);
@@ -348,7 +348,7 @@ async fn selected_video_mapping_and_offsets_match_in_all_pipelines() {
 }
 
 struct TestEnv {
-    tools: mosaic_lib::ffmpeg::Tools,
+    tools: acsm::ffmpeg::Tools,
     fixture: PathBuf,
     info: VideoInfo,
     tmp: tempfile::TempDir,
@@ -371,8 +371,8 @@ async fn setup(fixture_name: &str) -> Option<TestEnv> {
         return None;
     }
     let fixture = fixture_path(fixture_name);
-    let tools = mosaic_lib::ffmpeg_test_hook_locate().expect("locate tools");
-    let info = mosaic_lib::ffmpeg_test_hook_probe(&tools, &fixture.to_string_lossy())
+    let tools = acsm::ffmpeg_test_hook_locate().expect("locate tools");
+    let info = acsm::ffmpeg_test_hook_probe(&tools, &fixture.to_string_lossy())
         .await.expect("probe failed");
     Some(TestEnv { tools, fixture, info, tmp: tempfile::tempdir().unwrap() })
 }

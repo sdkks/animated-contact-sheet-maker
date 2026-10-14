@@ -77,22 +77,22 @@ jobs:
           security find-identity -v -p codesigning build.keychain
           rm "$RUNNER_TEMP/certificate.p12"
 
-      - name: Build mosaic-cli (lipo universal, macOS only)
+      - name: Build acsm (lipo universal, macOS only)
         if: matrix.cli-lipo == 'true'
         run: |
           cargo build --locked --release --target aarch64-apple-darwin
           cargo build --locked --release --target x86_64-apple-darwin
           mkdir -p target/universal-apple-darwin/release
-          lipo -create -output target/universal-apple-darwin/release/mosaic-cli \
-            target/aarch64-apple-darwin/release/mosaic-cli \
-            target/x86_64-apple-darwin/release/mosaic-cli
-          strip target/universal-apple-darwin/release/mosaic-cli
+          lipo -create -output target/universal-apple-darwin/release/acsm \
+            target/aarch64-apple-darwin/release/acsm \
+            target/x86_64-apple-darwin/release/acsm
+          strip target/universal-apple-darwin/release/acsm
 
-      - name: Build mosaic-cli (single target)
+      - name: Build acsm (single target)
         if: matrix.cli-lipo != 'true'
         run: cargo build --locked --release --target ${{ matrix.cli-target }}
 
-      - name: Codesign + notarize mosaic-cli (macOS)
+      - name: Codesign + notarize acsm (macOS)
         if: matrix.cli-lipo == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -101,37 +101,37 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
-          bin="target/universal-apple-darwin/release/mosaic-cli"
+          bin="target/universal-apple-darwin/release/acsm"
           codesign --force --options runtime --timestamp \
             --sign "$APPLE_SIGNING_IDENTITY" "$bin"
           codesign --verify --verbose "$bin"
           # Notarize via zip — notarytool requires a container, not a raw Mach-O.
-          ditto -c -k --keepParent "$bin" mosaic-cli-notarize.zip
-          xcrun notarytool submit mosaic-cli-notarize.zip \
+          ditto -c -k --keepParent "$bin" acsm-notarize.zip
+          xcrun notarytool submit acsm-notarize.zip \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait
-          rm mosaic-cli-notarize.zip
+          rm acsm-notarize.zip
 
       - name: Strip CLI (Linux)
         if: matrix.os == 'ubuntu-22.04'
-        run: strip target/${{ matrix.cli-target }}/release/mosaic-cli
+        run: strip target/${{ matrix.cli-target }}/release/acsm
 
       - name: Prepare CLI artifact
         shell: bash
         run: |
           if [ "${{ matrix.cli-lipo }}" = "true" ]; then
-            src="target/universal-apple-darwin/release/mosaic-cli"
+            src="target/universal-apple-darwin/release/acsm"
             ext=""
           elif [ "$RUNNER_OS" = "Windows" ]; then
-            src="target/${{ matrix.cli-target }}/release/mosaic-cli.exe"
+            src="target/${{ matrix.cli-target }}/release/acsm.exe"
             ext=".exe"
           else
-            src="target/${{ matrix.cli-target }}/release/mosaic-cli"
+            src="target/${{ matrix.cli-target }}/release/acsm"
             ext=""
           fi
-          dst="mosaic-cli-${{ matrix.cli-name }}${ext}"
+          dst="acsm-${{ matrix.cli-name }}${ext}"
           cp "$src" "$dst"
           echo "CLI_ARTIFACT=$dst" >> "$GITHUB_ENV"
 
@@ -145,11 +145,11 @@ jobs:
             exit 1
           fi
           docker run --rm -v "$PWD:/input:ro" alpine:3.19 sh -ec '
-            /input/mosaic-cli-linux-x86_64-musl --help
+            /input/acsm-linux-x86_64-musl --help
             apk add --no-cache ffmpeg mediainfo
-            export MOSAIC_CLI_CONFIG=/tmp/mosaic.toml
-            /input/mosaic-cli-linux-x86_64-musl probe /input/tests/fixtures/sample.mp4
-            /input/mosaic-cli-linux-x86_64-musl sheet /input/tests/fixtures/sample.mp4 --cols 2 --rows 1 -o /tmp/smoke
+            export ACSM_CONFIG=/tmp/acsm.toml
+            /input/acsm-linux-x86_64-musl probe /input/tests/fixtures/sample.mp4
+            /input/acsm-linux-x86_64-musl sheet /input/tests/fixtures/sample.mp4 --cols 2 --rows 1 -o /tmp/smoke
             test -n "$(find /tmp/smoke -type f -size +0c)"
           '
 
@@ -188,7 +188,7 @@ jobs:
           mkdir -p checksums
           gh release download "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
-            --pattern 'mosaic-cli-*.sha256' \
+            --pattern 'acsm-*.sha256' \
             --dir checksums
           sort checksums/*.sha256 > SHA256SUMS
           echo "--- SHA256SUMS ---"
@@ -199,11 +199,11 @@ jobs:
         with:
           files: SHA256SUMS
           tag_name: ${{ github.ref_name }}
-          name: "Mosaic ${{ github.ref_name }}"
+          name: "ACSM ${{ github.ref_name }}"
           body: |
             ## What's New
 
-            Mosaic is now CLI-only. Build or install from the repository root with Cargo, without Node, Tauri, GTK or WebKit. Existing CLI commands, configuration and output formats are retained.
+            ACSM is CLI-only. Build or install from the repository root with Cargo, without Node, Tauri, GTK or WebKit. The executable is `acsm`; rendering commands, configuration keys and output formats are retained. Previous configuration paths and environment variables are not read or migrated automatically.
 
             ### Requirements
 
@@ -211,13 +211,13 @@ jobs:
 
             ### Downloads and verification
 
-            Download the `mosaic-cli-*` binary for your platform. Linux x86_64 has both the existing GNU build (`mosaic-cli-linux-x86_64`) and a static musl build (`mosaic-cli-linux-x86_64-musl`) for Alpine and other musl systems. Media tools are still separate runtime prerequisites (`apk add ffmpeg mediainfo` on Alpine). Verify the binary against `SHA256SUMS` before replacing your installed binary. Configuration remains at `~/.mosaic-cli.toml`.
+            Download the `acsm-*` binary for your platform. Linux x86_64 has both the existing GNU build (`acsm-linux-x86_64`) and a static musl build (`acsm-linux-x86_64-musl`) for Alpine and other musl systems. Media tools are still separate runtime prerequisites (`apk add ffmpeg mediainfo` on Alpine). Verify the binary against `SHA256SUMS` before replacing your installed binary. Configuration uses `~/.acsm.toml` (override with `ACSM_CONFIG`).
 
             ### Notes
 
             The macOS universal CLI is Developer-ID signed and notarized. Windows CLI builds are unsigned; SmartScreen may warn on first run. Desktop installers and GUI auto-updates are no longer produced.
 
-            Mosaic is MIT-licensed. The embedded DejaVu Sans font retains its Bitstream/Arev notices; see `assets/fonts/LICENSE` in the source.
+            ACSM is MIT-licensed. The embedded DejaVu Sans font retains its Bitstream/Arev notices; see `assets/fonts/LICENSE` in the source.
           draft: true
           prerelease: false
           fail_on_unmatched_files: true

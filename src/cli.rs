@@ -1,5 +1,5 @@
 // Clap v4 derive surface for every subcommand. Defaults reference
-// mosaic_lib::defaults.
+// acsm::defaults.
 
 use clap::{Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
@@ -7,10 +7,10 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
-    name = "mosaic-cli",
+    name = "acsm",
     version,
     about = "Video contact sheets, screenshots, previews, and animated sheets",
-    after_help = "Config file: ~/.mosaic-cli.toml (auto-created on first run; override path with $MOSAIC_CLI_CONFIG).\nDocs: https://mosaicvideo.github.io/cli.html"
+    after_help = "Config file: ~/.acsm.toml (auto-created on first run; override path with $ACSM_CONFIG).\nDocs: https://github.com/sdkks/animated-contact-sheet-maker#usage"
 )]
 pub struct Cli {
     /// Directory for temporary media and fonts (must exist and be writable).

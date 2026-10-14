@@ -1,5 +1,5 @@
 ---
-description: Cut a Mosaic CLI release — preflight, approved notes, version bump, commit, tag and confirmed push.
+description: Cut an ACSM CLI release — preflight, approved notes, version bump, commit, tag and confirmed push.
 argument-hint: <version> [--dry-run]
 ---
 
@@ -14,7 +14,7 @@ Record the repository URL from `git remote get-url origin`, owner/repository fro
 ## 2. Blocking preflight
 
 - Require an `[Unreleased]` section in `CHANGELOG.md`.
-- Require the requested tag to be absent locally and remotely; do not force-delete an existing tag.
+- Require the requested tag to be absent locally and remotely; do not force-delete an existing tag. The source version reset to 0.1.0 does not authorize reusing inherited tags; stop for a human version/tag decision if the name already exists.
 - Fetch origin and require no commits in `HEAD..origin/main`; if behind, stop.
 - Require new commits since the last release tag.
 - Run these root checks, capturing complete output. Every check must pass:
@@ -42,7 +42,7 @@ Insert the approved version/date entry below `[Unreleased]` and update compare l
 
 Run `node scripts/bump-version.mjs <version>` **without `--tag`**. This optional maintainer utility changes exactly root `Cargo.toml` and `Cargo.lock`, using `cargo update --workspace` to avoid dependency upgrades. Node is not required by application build/install/test.
 
-Review the two version changes and confirm the `mosaic-cli` lockfile package entry matches the manifest. Re-run the preflight checks after these final input changes. Stage exactly:
+Review the two version changes and confirm the `acsm` lockfile package entry matches the manifest. Re-run the preflight checks after these final input changes. Stage exactly:
 
 ```sh
 git add Cargo.toml Cargo.lock CHANGELOG.md .github/workflows/release.yml
@@ -58,11 +58,11 @@ Show commits about to ship, tag and Actions URL. Obtain explicit confirmation be
 
 After an authorized push, check the release workflow run. It builds only these CLI artifacts:
 
-- `mosaic-cli-macos-universal` (Developer-ID signed and notarized)
-- `mosaic-cli-windows-x86_64.exe` (unsigned)
-- `mosaic-cli-windows-aarch64.exe` (unsigned)
-- `mosaic-cli-linux-x86_64` (GNU)
-- `mosaic-cli-linux-x86_64-musl` (static musl; native x86_64 build with Alpine smoke)
+- `acsm-macos-universal` (Developer-ID signed and notarized)
+- `acsm-windows-x86_64.exe` (unsigned)
+- `acsm-windows-aarch64.exe` (unsigned)
+- `acsm-linux-x86_64` (GNU)
+- `acsm-linux-x86_64-musl` (static musl; native x86_64 build with Alpine smoke)
 
 Verify all five artifacts, their `.sha256` companions and sorted `SHA256SUMS` are present. The finalizer supplies the release title/body. Provide Actions and Releases URLs. The release remains a **draft** until the human reviews notes and assets and chooses Publish. No updater metadata or desktop installers are expected.
 

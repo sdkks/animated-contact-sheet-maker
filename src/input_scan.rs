@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn missing_path_errors() {
-        let err = scan(Path::new("/does/not/exist/mosaic"), false);
+        let err = scan(Path::new("/does/not/exist/acsm"), false);
         assert!(err.is_err());
     }
 }

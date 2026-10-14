@@ -1,11 +1,10 @@
 [package]
-name = "mosaic-cli"
-version = "0.1.8"
+name = "acsm"
+version = "0.1.0"
 edition = "2024"
-description = "Command-line interface for Mosaic — video contact sheets, screenshots, animated previews, and probe metadata"
-authors = ["Mosaic contributors"]
+description = "Command-line interface for ACSM — video contact sheets, screenshots, animated previews, and probe metadata"
 license = "MIT"
-repository = "https://github.com/mosaicvideo/mosaic"
+repository = "https://github.com/sdkks/animated-contact-sheet-maker"
 # Package only application inputs, not preserved caches from older layouts.
 include = [
     "/Cargo.toml", "/Cargo.lock", "/.cargo/config.toml",
@@ -14,10 +13,10 @@ include = [
 ]
 
 [lib]
-name = "mosaic_lib"
+name = "acsm"
 
 [[bin]]
-name = "mosaic-cli"
+name = "acsm"
 path = "src/main.rs"
 
 [dependencies]

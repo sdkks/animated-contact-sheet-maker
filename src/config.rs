@@ -1,5 +1,5 @@
 // src/config.rs
-// Resolves ~/.mosaic-cli.toml (or $MOSAIC_CLI_CONFIG), auto-creates a
+// Resolves ~/.acsm.toml (or $ACSM_CONFIG), auto-creates a
 // commented template on first run, parses it into a Config with
 // Option<T> fields, and warns on unknown keys.
 
@@ -94,27 +94,27 @@ pub struct AnimatedSheetCfg {
     pub suffix: Option<String>,
 }
 
-/// Default path: `$HOME/.mosaic-cli.toml` (Unix) or
-/// `%USERPROFILE%\.mosaic-cli.toml` (Windows). Overridable via
-/// `$MOSAIC_CLI_CONFIG`. Returns `None` when no home is set (sandboxed CI).
-/// The bool flag is `true` when the path came from `$MOSAIC_CLI_CONFIG`
+/// Default path: `$HOME/.acsm.toml` (Unix) or
+/// `%USERPROFILE%\.acsm.toml` (Windows). Overridable via
+/// `$ACSM_CONFIG`. Returns `None` when no home is set (sandboxed CI).
+/// The bool flag is `true` when the path came from `$ACSM_CONFIG`
 /// (user explicitly set it) — callers use this to decide whether a
 /// write-fail on auto-create warrants a warning.
 pub fn resolve_path() -> Option<(PathBuf, bool)> {
-    if let Ok(p) = std::env::var("MOSAIC_CLI_CONFIG") {
+    if let Ok(p) = std::env::var("ACSM_CONFIG") {
         return Some((PathBuf::from(p), true));
     }
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .ok()?;
-    Some((PathBuf::from(home).join(".mosaic-cli.toml"), false))
+    Some((PathBuf::from(home).join(".acsm.toml"), false))
 }
 
 /// Load config from `path` if it exists, otherwise create a commented
 /// template (printing a one-time notice to stderr) and return defaults.
 /// On any I/O error during creation, skip silently and return defaults.
 /// Returns `Err(ConfigError)` if the file exists but cannot be parsed.
-/// `is_explicit` should be `true` when the path came from `$MOSAIC_CLI_CONFIG`
+/// `is_explicit` should be `true` when the path came from `$ACSM_CONFIG`
 /// so that a failed write emits a warning rather than failing silently.
 pub fn load_or_create(path: &Path, is_explicit: bool) -> Result<Config, ConfigError> {
     if path.exists() {
@@ -130,7 +130,7 @@ pub fn load_or_create(path: &Path, is_explicit: bool) -> Result<Config, ConfigEr
         Ok(()) => eprintln!("Created {}", path.display()),
         Err(e) => {
             if is_explicit {
-                eprintln!("warning: MOSAIC_CLI_CONFIG={} could not be created: {e}", path.display());
+                eprintln!("warning: ACSM_CONFIG={} could not be created: {e}", path.display());
             }
             // read-only $HOME / sandbox: silently fall back to defaults
         }
@@ -236,7 +236,7 @@ fn template() -> &'static str {
     // Keep in sync with the Cfg structs above. Every field appears commented
     // so users can uncomment and edit individual values.
     concat!(
-        "# ~/.mosaic-cli.toml — per-user defaults for mosaic-cli.\n",
+        "# ~/.acsm.toml — per-user defaults for acsm.\n",
         "# Uncomment any key to override the built-in default.\n",
         "# CLI flags always override this file.\n",
         "\n",
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn load_missing_creates_template() {
         let tmp = TempDir::new().unwrap();
-        let p = tmp.path().join(".mosaic-cli.toml");
+        let p = tmp.path().join(".acsm.toml");
         let cfg = load_or_create(&p, false).unwrap();
         assert!(p.exists(), "template should have been written");
         assert!(cfg.screenshots.count.is_none());
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn parse_roundtrip() {
         let tmp = TempDir::new().unwrap();
-        let p = tmp.path().join(".mosaic-cli.toml");
+        let p = tmp.path().join(".acsm.toml");
         std::fs::write(&p, "[sheet]\ncols = 5\nrows = 4\n").unwrap();
         let cfg = load_or_create(&p, false).unwrap();
         assert_eq!(cfg.sheet.cols, Some(5));
@@ -358,7 +358,7 @@ mod tests {
     #[test]
     fn unknown_key_does_not_fail() {
         let tmp = TempDir::new().unwrap();
-        let p = tmp.path().join(".mosaic-cli.toml");
+        let p = tmp.path().join(".acsm.toml");
         std::fs::write(&p, "[sheet]\ncols = 3\nbogus = 99\n").unwrap();
         let cfg = load_or_create(&p, false).unwrap(); // stderr warning is side-effect, not asserted here
         assert_eq!(cfg.sheet.cols, Some(3));
@@ -367,7 +367,7 @@ mod tests {
     #[test]
     fn parse_failure_returns_err() {
         let tmp = TempDir::new().unwrap();
-        let p = tmp.path().join(".mosaic-cli.toml");
+        let p = tmp.path().join(".acsm.toml");
         std::fs::write(&p, "[sheet]\ncols = \"not a number\"\n").unwrap();
         let err = load_or_create(&p, false).unwrap_err();
         assert!(matches!(err, ConfigError::ParseFailed { .. }));
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn explicit_path_nonexistent_parent_does_not_crash() {
-        // $MOSAIC_CLI_CONFIG pointing at a path whose parent dir doesn't exist.
+        // $ACSM_CONFIG pointing at a path whose parent dir doesn't exist.
         // Should return defaults, not error.
         let p = std::path::PathBuf::from("/nonexistent-parent-12345/cfg.toml");
         let cfg = load_or_create(&p, true).unwrap();
