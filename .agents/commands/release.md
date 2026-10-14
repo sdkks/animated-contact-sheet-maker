@@ -36,7 +36,7 @@ Read commits and relevant diffs since the previous tag. Draft user-facing Added/
 
 ## 4. Write changelog and workflow notes
 
-Insert the approved version/date entry below `[Unreleased]` and update compare links. In `.github/workflows/release.yml`, edit only the finalizer's `body: |` notes block; title and notes belong to the existing `softprops/action-gh-release` step, not a matrix job. Keep media-tool requirements, checksum guidance and accurate platform-signing notes. Do not add GUI download or auto-update instructions.
+Insert the approved version/date entry below `[Unreleased]` and update compare links. In `.github/workflows/release.yml`, edit only the finalizer's `body: |` notes block; title and notes belong to the existing `softprops/action-gh-release` step, not a matrix job. Keep media-tool requirements, checksum guidance, unsigned Windows notes and macOS source-only installation instructions. Do not add GUI download or auto-update instructions.
 
 ## 5. Bump and verify
 
@@ -58,12 +58,13 @@ Show commits about to ship, tag and Actions URL. Obtain explicit confirmation be
 
 After an authorized push, check the release workflow run. It builds only these CLI artifacts:
 
-- `acsm-macos-universal` (Developer-ID signed and notarized)
 - `acsm-windows-x86_64.exe` (unsigned)
 - `acsm-windows-aarch64.exe` (unsigned)
 - `acsm-linux-x86_64` (GNU)
 - `acsm-linux-x86_64-musl` (static musl; native x86_64 build with Alpine smoke)
 
-Verify all five artifacts, their `.sha256` companions and sorted `SHA256SUMS` are present. The finalizer supplies the release title/body. Provide Actions and Releases URLs. The release remains a **draft** until the human reviews notes and assets and chooses Publish. No updater metadata or desktop installers are expected.
+Verify all four artifacts, their `.sha256` companions and sorted `SHA256SUMS` are present. The finalizer supplies the release title/body. Provide Actions and Releases URLs. The release remains a **draft** until the human reviews notes and assets and chooses Publish. No updater metadata or desktop installers are expected.
+
+macOS has no CI/release binary or signing/notarization job. Preserve local macOS support and document source installation: `cargo install --path . --locked` from the repository root, or `cargo install --git https://github.com/sdkks/animated-contact-sheet-maker.git --locked acsm`. Rust stable and a platform C linker are required; keep `brew install ffmpeg-full mediainfo` for runtime media tools.
 
 In dry-run mode report the local commit/tag and that nothing was pushed; do not silently clean them up. Any failing command aborts the release. Never skip a gate or access signing secrets to make a check pass.

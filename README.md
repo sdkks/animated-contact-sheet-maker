@@ -45,7 +45,17 @@ acsm --help
 
 Cargo installs the binary into its configured bin directory (normally `~/.cargo/bin`). Use `--root /your/install/path` for an isolated installation and add that directory's `bin` to PATH. No crates.io publication is assumed by these instructions.
 
-Release workflows retain standalone CLI binaries named `acsm-macos-universal`, `acsm-windows-x86_64.exe`, `acsm-windows-aarch64.exe`, and `acsm-linux-x86_64` (GNU), and add `acsm-linux-x86_64-musl`, plus individual SHA-256 hashes and `SHA256SUMS`. The macOS workflow signs and notarizes its binary; Windows binaries remain unsigned. Release creation is tag-triggered and produces a draft for human review, not GUI installers.
+Release workflows produce four standalone CLI binaries: `acsm-windows-x86_64.exe`, `acsm-windows-aarch64.exe`, `acsm-linux-x86_64` (GNU), and `acsm-linux-x86_64-musl`, plus individual SHA-256 hashes and `SHA256SUMS`. Windows binaries remain unsigned. Release creation is tag-triggered and produces a draft for human review, not GUI installers.
+
+### macOS: install from source
+
+No macOS binaries are built by CI or attached to releases. With the Rust and media-tool prerequisites above installed, use `cargo install --path . --locked` from the repository root, or install directly from Git:
+
+```sh
+cargo install --git https://github.com/sdkks/animated-contact-sheet-maker.git --locked acsm
+```
+
+macOS runtime support and local build/test commands remain available.
 
 ### Download the Linux musl CI build
 
