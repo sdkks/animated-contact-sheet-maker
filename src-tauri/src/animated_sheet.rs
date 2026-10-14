@@ -63,6 +63,7 @@ pub(crate) struct HeaderParams {
 #[allow(clippy::too_many_arguments)]
 pub fn build_extract_args(
     source: &Path,
+    video: &crate::video_info::VideoStream,
     timestamp: f64,
     thumb_w: u32,
     thumb_h: u32,
@@ -91,7 +92,7 @@ pub fn build_extract_args(
     let vf = crate::ffmpeg::vf_chain(&[hdr_filter, Some(&scale), ts_filter.as_deref(), Some(&pad)]);
 
     let mut args = crate::ffmpeg::base_args();
-    args.extend(crate::ffmpeg::seek_input_args_clip(source, timestamp));
+    args.extend(crate::ffmpeg::seek_input_args_clip(source, timestamp, video));
     args.extend([
         "-t".into(), format!("{}", clip_length_secs),
         "-vf".into(), vf,
@@ -176,11 +177,11 @@ pub async fn generate(
     let layout = compute_sheet_layout(opts.cols, opts.rows, opts.width, opts.gap);
 
     let thumb_h = thumb_height(layout.thumb_w, info.video.width, info.video.height);
-    let timestamps = sample_clip_timestamps(info.duration_secs, layout.total, opts.clip_length_secs as f64);
+    let timestamps = sample_clip_timestamps(info.sampling_duration_secs(), layout.total, opts.clip_length_secs as f64);
     if timestamps.is_empty() {
         return Err(RunError::Invalid(format!(
             "source duration ({:.2}s) is too short for {}s clips",
-            info.duration_secs, opts.clip_length_secs
+            info.sampling_duration_secs(), opts.clip_length_secs
         )));
     }
 
@@ -194,7 +195,7 @@ pub async fn generate(
         let idx = (i as u32) + 1;
         let cell = tmp.path().join(format!("cell_{:03}.mp4", idx));
         let args = build_extract_args(
-            source, *ts, layout.thumb_w, thumb_h, layout.gap, opts.fps,
+            source, &info.video, *ts, layout.thumb_w, thumb_h, layout.gap, opts.fps,
             opts.clip_length_secs, opts.show_timestamps, opts.thumb_font_size,
             opts.theme, font, &cell, hdr_filter.as_deref(),
         );
@@ -255,6 +256,7 @@ mod tests {
             size_bytes: None,
             bit_rate: None,
             video: crate::video_info::VideoStream {
+                index: 0, duration_secs: None, start_secs: 0.0, seek_offset_secs: 0.0,
                 codec: String::new(),
                 profile: None,
                 width: w,
@@ -276,6 +278,7 @@ mod tests {
     fn extract_args_shape() {
         let args = build_extract_args(
             Path::new("/v/movie.mkv"),
+            &sample_info(60.0, 1920, 1080).video,
             12.5,
             320, 180, 10, 12, 2,
             true, 18, SheetTheme::Dark,
@@ -305,6 +308,7 @@ mod tests {
     fn extract_args_light_theme_uses_white_bg_and_black_text() {
         let args = build_extract_args(
             Path::new("/v/movie.mkv"),
+            &sample_info(60.0, 1920, 1080).video,
             5.0,
             320, 180, 10, 12, 2,
             true, 18, SheetTheme::Light,
@@ -322,6 +326,7 @@ mod tests {
     fn extract_args_omits_drawtext_when_timestamps_off() {
         let args = build_extract_args(
             Path::new("/v/movie.mkv"),
+            &sample_info(60.0, 1920, 1080).video,
             5.0,
             320, 180, 10, 12, 2,
             false, 18, SheetTheme::Dark,

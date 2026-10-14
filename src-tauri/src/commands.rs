@@ -321,8 +321,8 @@ pub fn cancel_job(state: State<'_, Arc<JobState>>) {
 pub(crate) async fn probe(tools: &Tools, path: &str) -> Result<VideoInfo, String> {
     let ffprobe_args = [
         "-v", "error",
-        "-show_entries", "format=filename,duration,size,bit_rate",
-        "-show_entries", "stream=codec_name,codec_type,width,height,r_frame_rate,duration,nb_frames,sample_rate,channels,bit_rate,profile,color_transfer,sample_aspect_ratio",
+        "-show_entries", "format=filename,start_time,duration,size,bit_rate",
+        "-show_entries", "stream=index,start_time,codec_name,codec_type,width,height,r_frame_rate,duration,nb_frames,sample_rate,channels,bit_rate,profile,color_transfer,sample_aspect_ratio",
         "-show_entries", "stream_side_data=side_data_type,dv_profile,rotation",
         "-of", "json",
         path,
@@ -340,7 +340,8 @@ pub(crate) async fn probe(tools: &Tools, path: &str) -> Result<VideoInfo, String
     };
     let mut info = match parse_with_hints(&json, hints) {
         Err(ProbeParseError::MissingDuration) => {
-            hints.packet_count = count_video_packets(tools, path).await;
+            let index = crate::video_info::selected_video_index(&json).map_err(|e| e.to_string())?;
+            hints.packet_count = count_video_packets(tools, path, index).await;
             parse_with_hints(&json, hints)
         }
         parsed => parsed,
@@ -351,10 +352,10 @@ pub(crate) async fn probe(tools: &Tools, path: &str) -> Result<VideoInfo, String
 }
 
 /// Reads the whole file, so it only runs when nothing else gave a duration.
-async fn count_video_packets(tools: &Tools, path: &str) -> Option<u64> {
+async fn count_video_packets(tools: &Tools, path: &str, index: usize) -> Option<u64> {
     let out = run_capture(&tools.ffprobe, &[
         "-v", "error",
-        "-select_streams", "v:0",
+        "-select_streams", &index.to_string(),
         "-count_packets",
         "-show_entries", "stream=nb_read_packets",
         "-of", "csv=p=0",

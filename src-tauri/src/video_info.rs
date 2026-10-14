@@ -11,6 +11,19 @@ const SIDE_DATA_DISPLAY_MATRIX: &str = "Display Matrix";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VideoStream {
+    /// Absolute ffprobe stream index, used for explicit extraction mapping.
+    #[serde(default)]
+    pub index: usize,
+    /// This stream's duration, or a frame-count/rate estimate when unavailable,
+    /// independent of container/audio length.
+    #[serde(default)]
+    pub duration_secs: Option<f64>,
+    /// Original timestamp origin, for output-level seeking with `-copyts`.
+    #[serde(default)]
+    pub start_secs: f64,
+    /// Stream start relative to the input's format start, for input-level `-ss`.
+    #[serde(default)]
+    pub seek_offset_secs: f64,
     pub codec: String,
     pub profile: Option<String>,
     /// Displayed (square-pixel) width: encoded width with SAR applied and
@@ -87,6 +100,18 @@ impl DurationSource {
 }
 
 impl VideoInfo {
+    /// Prefer the selected video's own range. A container fallback starts at
+    /// the format origin, so use only its remaining span from the video origin.
+    pub fn sampling_duration_secs(&self) -> f64 {
+        self.video.duration_secs.unwrap_or_else(|| {
+            if self.duration_source == DurationSource::Container {
+                (self.duration_secs - self.video.seek_offset_secs).max(0.0)
+            } else {
+                self.duration_secs
+            }
+        })
+    }
+
     pub fn require_seekable(&self) -> Result<(), String> {
         if !self.duration_source.is_estimate() {
             return Ok(());
@@ -129,6 +154,8 @@ struct RawRoot {
 
 #[derive(Deserialize)]
 struct RawStream {
+    index: Option<usize>,
+    start_time: Option<String>,
     codec_type: String,
     codec_name: Option<String>,
     profile: Option<String>,
@@ -147,6 +174,7 @@ struct RawStream {
 
 #[derive(Deserialize)]
 struct RawFormat {
+    start_time: Option<String>,
     filename: Option<String>,
     duration: Option<String>,
     size: Option<String>,
@@ -196,8 +224,28 @@ fn displayed_dims(encoded_w: u32, encoded_h: u32, sar: Option<(u32, u32)>, rotat
     if swap { (h, w) } else { (w, h) }
 }
 
+fn finite_secs(raw: Option<&str>) -> Option<f64> {
+    raw?.parse::<f64>().ok().filter(|d| d.is_finite())
+}
+
 fn positive_secs(raw: Option<&str>) -> Option<f64> {
-    raw?.parse::<f64>().ok().filter(|d| d.is_finite() && *d > 0.0)
+    finite_secs(raw).filter(|d| *d > 0.0)
+}
+
+fn selected_stream(streams: &[RawStream]) -> Result<(usize, &RawStream), ProbeParseError> {
+    // MVC enhancement views can have zero dimensions. Preserve the first
+    // usable base-layer choice, falling back to any video when all lack dims.
+    streams.iter().enumerate()
+        .find(|(_, s)| s.codec_type == "video" && s.width.unwrap_or(0) > 0 && s.height.unwrap_or(0) > 0)
+        .or_else(|| streams.iter().enumerate().find(|(_, s)| s.codec_type == "video"))
+        .map(|(position, stream)| (stream.index.unwrap_or(position), stream))
+        .ok_or(ProbeParseError::NoVideo)
+}
+
+/// Also usable before duration resolution, so packet counting targets the same video.
+pub(crate) fn selected_video_index(json: &str) -> Result<usize, ProbeParseError> {
+    let root: RawRoot = serde_json::from_str(json)?;
+    selected_stream(&root.streams).map(|(index, _)| index)
 }
 
 fn resolve_duration(
@@ -228,18 +276,7 @@ pub fn parse_with_hints(json: &str, hints: DurationHints) -> Result<VideoInfo, P
     let size_bytes = root.format.size.as_deref().and_then(|s| s.parse().ok());
     let bit_rate = root.format.bit_rate.as_deref().and_then(|s| s.parse().ok());
 
-    // 3D Blu-ray / MVC streams expose a zero-dim dependent-enhancement view as
-    // the first `video` stream; the usable base layer is second. Prefer the
-    // first video stream with real dimensions so downstream scaling uses the
-    // playable stream. Falls back to any video stream if none have dims, so
-    // parse errors still surface the original `NoVideo` for truly non-video
-    // inputs.
-    let v = root
-        .streams
-        .iter()
-        .find(|s| s.codec_type == "video" && s.width.unwrap_or(0) > 0 && s.height.unwrap_or(0) > 0)
-        .or_else(|| root.streams.iter().find(|s| s.codec_type == "video"))
-        .ok_or(ProbeParseError::NoVideo)?;
+    let (index, v) = selected_stream(&root.streams)?;
 
     let fps = v.r_frame_rate.as_deref().and_then(parse_fraction).unwrap_or(0.0);
     let frame_count = v.nb_frames.as_deref().and_then(|s| s.parse().ok()).or(hints.packet_count);
@@ -271,7 +308,17 @@ pub fn parse_with_hints(json: &str, hints: DurationHints) -> Result<VideoInfo, P
         rotation,
     );
 
+    let format_start = finite_secs(root.format.start_time.as_deref()).unwrap_or(0.0);
+    let start_secs = finite_secs(v.start_time.as_deref()).unwrap_or(format_start);
+    let video_duration = positive_secs(v.duration.as_deref()).or_else(|| {
+        frame_count.filter(|n| *n > 0 && fps.is_finite() && fps > 0.0)
+            .map(|n| n as f64 / fps)
+    });
     let video = VideoStream {
+        index,
+        duration_secs: video_duration,
+        start_secs,
+        seek_offset_secs: start_secs - format_start,
         codec: v.codec_name.clone().unwrap_or_default(),
         profile: v.profile.clone(),
         width: disp_w,
@@ -302,6 +349,121 @@ mod tests {
 
     fn fixture(name: &str) -> String {
         std::fs::read_to_string(format!("tests/fixtures/{}", name)).unwrap()
+    }
+
+    #[test]
+    fn selected_duration_and_index_do_not_follow_container_or_other_video() {
+        let json = r#"{"streams":[
+            {"index":2,"codec_type":"audio","duration":"300"},
+            {"index":4,"codec_type":"video","width":0,"height":0,"duration":"200"},
+            {"index":7,"codec_type":"video","width":96,"height":64,"duration":"4","start_time":"7"},
+            {"index":9,"codec_type":"video","width":1920,"height":1080,"duration":"100"}],
+            "format":{"duration":"300","start_time":"5"}}"#;
+        let info = parse(json).unwrap();
+        assert_eq!(info.video.index, 7);
+        assert_eq!(selected_video_index(json).unwrap(), 7);
+        assert_eq!(info.sampling_duration_secs(), 4.0);
+        assert_eq!(info.duration_secs, 300.0);
+        assert_eq!(info.duration_source, DurationSource::Container);
+        assert_eq!(info.video.start_secs, 7.0);
+        assert_eq!(info.video.seek_offset_secs, 2.0);
+    }
+
+    #[test]
+    fn selected_duration_falls_back_without_using_another_stream() {
+        for duration in [None, Some("N/A"), Some("0"), Some("-1"), Some("NaN"), Some("inf")] {
+            let mut json = serde_json::json!({"streams":[
+                {"codec_type":"audio","duration":"200"},
+                {"codec_type":"video","width":96,"height":64},
+                {"codec_type":"video","width":1920,"height":1080,"duration":"100"}],
+                "format":{"duration":"8"}});
+            if let Some(d) = duration { json["streams"][1]["duration"] = d.into(); }
+            let info = parse(&json.to_string()).unwrap();
+            assert_eq!(info.video.index, 1, "missing index falls back to stream position");
+            assert_eq!(info.video.duration_secs, None);
+            assert_eq!(info.sampling_duration_secs(), 8.0);
+            json["streams"][1]["nb_frames"] = "48".into();
+            json["streams"][1]["r_frame_rate"] = "12/1".into();
+            let info = parse(&json.to_string()).unwrap();
+            assert_eq!(info.sampling_duration_secs(), 4.0);
+            assert!(info.require_seekable().is_ok(), "container still provides timestamps");
+        }
+    }
+
+    #[test]
+    fn container_sampling_uses_relative_not_absolute_video_origin() {
+        for (format_start, video_start, expected) in [
+            ("0", Some("0"), 10.0),
+            ("0", Some("2"), 8.0),
+            ("5", Some("7"), 8.0),
+            ("-5", Some("-3"), 8.0),
+            ("5", None, 10.0),
+            ("5", Some("4"), 11.0),
+            ("0", Some("12"), 0.0),
+        ] {
+            let json = serde_json::json!({"streams":[
+                {"codec_type":"video","start_time":video_start}],
+                "format":{"duration":"10","start_time":format_start}});
+            let info = parse(&json.to_string()).unwrap();
+            assert_eq!(info.video.duration_secs, None);
+            assert_eq!(info.sampling_duration_secs(), expected, "{json}");
+            assert_eq!(info.duration_secs, 10.0, "display metadata must not change");
+            assert_eq!(info.duration_source, DurationSource::Container);
+            assert!(info.require_seekable().is_ok());
+        }
+    }
+
+    #[test]
+    fn own_duration_and_frame_count_estimate_are_already_video_relative() {
+        for own_duration in [Some("4"), None] {
+            let json = serde_json::json!({"streams":[
+                {"codec_type":"video","start_time":"7","duration":own_duration,
+                 "nb_frames":"48","r_frame_rate":"12/1"}],
+                "format":{"duration":"10","start_time":"5"}});
+            let info = parse(&json.to_string()).unwrap();
+            assert_eq!(info.video.seek_offset_secs, 2.0);
+            assert_eq!(info.video.duration_secs, Some(4.0));
+            assert_eq!(info.sampling_duration_secs(), 4.0);
+            assert_eq!(info.duration_secs, 10.0);
+            assert_eq!(info.duration_source, DurationSource::Container);
+        }
+    }
+
+    #[test]
+    fn non_container_fallback_retains_duration_and_seekability() {
+        let json = r#"{"streams":[{"codec_type":"video","start_time":"7"}],
+            "format":{"start_time":"5"}}"#;
+        let info = parse_with_hints(json, DurationHints {
+            mediainfo_secs: Some(10.0), packet_count: None,
+        }).unwrap();
+        assert_eq!(info.video.duration_secs, None);
+        assert_eq!(info.video.seek_offset_secs, 2.0);
+        assert_eq!(info.sampling_duration_secs(), 10.0);
+        assert_eq!(info.duration_source, DurationSource::Mediainfo);
+        assert!(info.require_seekable().is_err());
+    }
+
+    #[test]
+    fn all_zero_dims_still_select_first_video_before_duration_fallback() {
+        let json = r#"{"streams":[{"index":0,"codec_type":"audio"},
+            {"index":3,"codec_type":"video","width":0,"height":0,"r_frame_rate":"12/1"},
+            {"index":5,"codec_type":"video","width":0,"height":0}],"format":{}}"#;
+        assert_eq!(selected_video_index(json).unwrap(), 3);
+        assert!(matches!(parse(json), Err(ProbeParseError::MissingDuration)));
+        let info = parse_with_hints(json, DurationHints { mediainfo_secs: None, packet_count: Some(48) }).unwrap();
+        assert_eq!(info.video.index, 3);
+        assert_eq!(info.sampling_duration_secs(), 4.0);
+        assert_eq!(info.duration_source, DurationSource::FrameCount);
+        assert!(info.require_seekable().is_err());
+    }
+
+    #[test]
+    fn stream_start_defaults_to_format_start_and_ignores_nonfinite_values() {
+        let json = r#"{"streams":[{"codec_type":"video","start_time":"NaN"}],
+            "format":{"duration":"8","start_time":"5"}}"#;
+        let info = parse(json).unwrap();
+        assert_eq!(info.video.start_secs, 5.0);
+        assert_eq!(info.video.seek_offset_secs, 0.0);
     }
 
     #[test]

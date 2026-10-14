@@ -126,6 +126,198 @@ async fn both_header_pipelines_render_literal_synthetic_filename_and_cancel() {
     }
 }
 
+/// Audio can outlive video; every sampled cell must still contain video.
+#[tokio::test]
+async fn selected_video_shorter_than_audio_renders_all_pipelines() {
+    let tools = mosaic_lib::ffmpeg_test_hook_locate().expect("media tools required");
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("short-video.mp4");
+    let result = std::process::Command::new(&tools.ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+            "testsrc2=s=96x64:r=12:d=4", "-f", "lavfi", "-i", "sine=duration=8",
+            "-c:v", "libx264", "-c:a", "aac"])
+        .arg(&source).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let info = mosaic_lib::ffmpeg_test_hook_probe(&tools, &source.to_string_lossy()).await.unwrap();
+    assert!(info.duration_secs >= 8.0, "container metadata remains unchanged");
+    let reporter = ProgressReporter { emit: &|_, _, _| {} };
+    let ctx = PipelineContext { ffmpeg: &tools.ffmpeg, cancelled: Arc::new(AtomicBool::new(false)), reporter: &reporter, has_zscale: false };
+    let animated = tmp.path().join("animated.webp");
+    animated_sheet::generate(&source, &info, &animated, &AnimatedSheetOptions {
+        cols: 6, rows: 4, width: 384, gap: 2, clip_length_secs: 1, fps: 4, quality: 60,
+        thumb_font_size: 14, header_font_size: 16, show_timestamps: false, show_header: false,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    }, &font_path(), &ctx).await.expect("24-cell animated sheet must not sample the audio-only tail");
+    assert_animated_webp(&std::fs::read(animated).unwrap());
+    contact_sheet::generate(&source, &info, &tmp.path().join("sheet.png"), &SheetOptions {
+        cols: 6, rows: 4, width: 384, gap: 2, thumb_font_size: 14, header_font_size: 16,
+        show_timestamps: false, show_header: false, format: OutputFormat::Png, jpeg_quality: 92,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    }, &font_path(), &ctx).await.unwrap();
+    let shots = screenshots::generate(&source, &info, &tmp.path().join("shots"), &ScreenshotsOptions {
+        count: 24, format: OutputFormat::Png, jpeg_quality: 92, suffix: String::new(),
+    }, &ctx).await.unwrap();
+    assert_eq!(shots.len(), 24);
+    for shot in shots { assert_eq!(probe_wh(&tools.ffprobe, &shot).await, (96, 64)); }
+    preview_reel::generate(&source, &info, &tmp.path().join("reel.webm"), &PreviewOptions {
+        count: 24, clip_length_secs: 1, height: 64, fps: 4, quality: 60,
+        suffix: String::new(), format: ReelFormat::Webm,
+    }, &ctx).await.unwrap();
+}
+
+/// Matroska commonly omits stream duration/count. Its container range must
+/// be shortened by the delayed video's origin before sampling all 24 cells.
+#[tokio::test]
+async fn selected_video_delayed_mkv_container_fallback_renders_all_pipelines() {
+    let tools = mosaic_lib::ffmpeg_test_hook_locate().expect("media tools required");
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("delayed.mkv");
+    let result = std::process::Command::new(&tools.ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+            "testsrc2=s=96x64:r=10:d=8", "-f", "lavfi", "-i", "sine=duration=10",
+            "-map", "0:v", "-map", "1:a", "-vf", "setpts=PTS+2/TB",
+            "-fps_mode:v", "passthrough", "-c:v", "libx264", "-c:a", "aac"])
+        .arg(&source).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let probe = std::process::Command::new(&tools.ffprobe)
+        .args(["-v", "error", "-show_streams", "-show_format", "-of", "json"])
+        .arg(&source).output().unwrap();
+    assert!(probe.status.success(), "{}", String::from_utf8_lossy(&probe.stderr));
+    let raw: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+    assert!(raw["streams"][0]["duration"].is_null());
+    assert!(raw["streams"][0]["nb_frames"].is_null());
+    let info = mosaic_lib::ffmpeg_test_hook_probe(&tools, &source.to_string_lossy()).await.unwrap();
+    assert_eq!(info.video.duration_secs, None);
+    assert_eq!(info.video.start_secs, 2.0);
+    assert_eq!(info.video.seek_offset_secs, 2.0);
+    assert!((info.duration_secs - 10.023).abs() < 0.05);
+    assert_eq!(info.duration_source, mosaic_lib::video_info::DurationSource::Container);
+    assert!(info.require_seekable().is_ok());
+    let reporter = ProgressReporter { emit: &|_, _, _| {} };
+    let ctx = PipelineContext { ffmpeg: &tools.ffmpeg, cancelled: Arc::new(AtomicBool::new(false)), reporter: &reporter, has_zscale: false };
+    let shots = screenshots::generate(&source, &info, &tmp.path().join("shots"), &ScreenshotsOptions {
+        count: 24, format: OutputFormat::Png, jpeg_quality: 92, suffix: String::new(),
+    }, &ctx).await.expect("all 24 screenshots must remain inside the delayed video's range");
+    assert_eq!(shots.len(), 24);
+    for shot in shots { assert_eq!(probe_wh(&tools.ffprobe, &shot).await, (96, 64)); }
+    let sheet = tmp.path().join("sheet.png");
+    contact_sheet::generate(&source, &info, &sheet, &SheetOptions {
+        cols: 6, rows: 4, width: 384, gap: 2, thumb_font_size: 14, header_font_size: 16,
+        show_timestamps: false, show_header: false, format: OutputFormat::Png, jpeg_quality: 92,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    }, &font_path(), &ctx).await.unwrap();
+    // Six even-rounded 60px thumbnails plus seven 2px gaps.
+    assert_eq!(probe_wh(&tools.ffprobe, &sheet).await.0, 374);
+    let animated = tmp.path().join("animated.webp");
+    animated_sheet::generate(&source, &info, &animated, &AnimatedSheetOptions {
+        cols: 6, rows: 4, width: 384, gap: 2, clip_length_secs: 1, fps: 4, quality: 60,
+        thumb_font_size: 14, header_font_size: 16, show_timestamps: false, show_header: false,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    }, &font_path(), &ctx).await.unwrap();
+    assert_animated_webp(&std::fs::read(animated).unwrap());
+    let reel = tmp.path().join("reel.webm");
+    preview_reel::generate(&source, &info, &reel, &PreviewOptions {
+        count: 24, clip_length_secs: 1, height: 64, fps: 4, quality: 60,
+        suffix: String::new(), format: ReelFormat::Webm,
+    }, &ctx).await.unwrap();
+    assert_eq!(probe_wh(&tools.ffprobe, &reel).await, (96, 64));
+    assert!((info.sampling_duration_secs() - (info.duration_secs - 2.0)).abs() < 1e-9);
+}
+
+/// Decode one animation frame as a standalone WebP: FFmpeg cannot demux
+/// animated WebP, but the ANMF payload holds ordinary image chunks.
+fn first_webp_frame(bytes: &[u8]) -> Vec<u8> {
+    let mut pos = 12;
+    while pos + 8 <= bytes.len() {
+        let size = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().unwrap()) as usize;
+        if &bytes[pos..pos + 4] == b"ANMF" {
+            let payload = &bytes[pos + 24..pos + 8 + size];
+            let mut still = b"RIFF".to_vec();
+            still.extend_from_slice(&((payload.len() + 4) as u32).to_le_bytes());
+            still.extend_from_slice(b"WEBP");
+            still.extend_from_slice(payload);
+            return still;
+        }
+        pos += 8 + size + size % 2;
+    }
+    bytes.to_vec() // A static WebP is already directly decodable.
+}
+
+fn average_pixel(ffmpeg: &std::path::Path, source: &std::path::Path) -> Vec<u8> {
+    let out = std::process::Command::new(ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-i"]).arg(source)
+        .args(["-frames:v", "1", "-vf", "scale=1:1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"])
+        .output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(out.stdout.len(), 3);
+    out.stdout
+}
+
+/// Stream 1 is the probe's small test pattern; automatic FFmpeg selection
+/// chooses stream 2 (larger, default, blue). Both timeline origins are nonzero.
+#[tokio::test]
+async fn selected_video_mapping_and_offsets_match_in_all_pipelines() {
+    let tools = mosaic_lib::ffmpeg_test_hook_locate().expect("media tools required");
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("multiple-videos.mp4");
+    let result = std::process::Command::new(&tools.ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=duration=8",
+            "-f", "lavfi", "-i", "testsrc2=s=96x64:r=12:d=4",
+            "-f", "lavfi", "-i", "color=blue:s=160x90:r=12:d=8",
+            "-map", "0:a", "-map", "1:v", "-map", "2:v", "-filter:v:0", "setpts=PTS+2/TB",
+            "-fps_mode:v:0", "passthrough", "-disposition:v:0", "0", "-disposition:v:1", "default",
+            "-c:v", "libx264", "-c:a", "aac", "-output_ts_offset", "5"])
+        .arg(&source).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let implicit = average_pixel(&tools.ffmpeg, &source);
+    assert!(implicit[2] > 200 && implicit[0] < 20, "automatic selection must be blue: {implicit:?}");
+    let info = mosaic_lib::ffmpeg_test_hook_probe(&tools, &source.to_string_lossy()).await.unwrap();
+    assert_eq!(info.video.index, 1);
+    assert_eq!(info.sampling_duration_secs(), 4.0);
+    assert_eq!(info.video.start_secs, 7.0);
+    assert!((info.video.seek_offset_secs - 2.0).abs() < 0.05);
+    let reporter = ProgressReporter { emit: &|_, _, _| {} };
+    let ctx = PipelineContext { ffmpeg: &tools.ffmpeg, cancelled: Arc::new(AtomicBool::new(false)), reporter: &reporter, has_zscale: false };
+    let sheet = tmp.path().join("sheet.png");
+    contact_sheet::generate(&source, &info, &sheet, &SheetOptions {
+        cols: 2, rows: 1, width: 192, gap: 2, thumb_font_size: 14, header_font_size: 16,
+        show_timestamps: false, show_header: false, format: OutputFormat::Png, jpeg_quality: 92,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    }, &font_path(), &ctx).await.unwrap();
+    let shots = screenshots::generate(&source, &info, &tmp.path().join("shots"), &ScreenshotsOptions {
+        count: 3, format: OutputFormat::Png, jpeg_quality: 92, suffix: String::new(),
+    }, &ctx).await.unwrap();
+    let animated = tmp.path().join("animated.webp");
+    animated_sheet::generate(&source, &info, &animated, &AnimatedSheetOptions {
+        cols: 2, rows: 1, width: 192, gap: 2, clip_length_secs: 1, fps: 4, quality: 60,
+        thumb_font_size: 14, header_font_size: 16, show_timestamps: false, show_header: false,
+        suffix: String::new(), theme: SheetTheme::Dark,
+    }, &font_path(), &ctx).await.unwrap();
+    let bytes = std::fs::read(&animated).unwrap();
+    assert_animated_webp(&bytes);
+    let animated_frame = tmp.path().join("frame.webp");
+    std::fs::write(&animated_frame, first_webp_frame(&bytes)).unwrap();
+    let reel = tmp.path().join("reel.webm");
+    preview_reel::generate(&source, &info, &reel, &PreviewOptions {
+        count: 3, clip_length_secs: 1, height: 64, fps: 4, quality: 60,
+        suffix: String::new(), format: ReelFormat::Webm,
+    }, &ctx).await.unwrap();
+    for output in [&sheet, &animated_frame, &reel].into_iter().chain(shots.iter()) {
+        let pixel = average_pixel(&tools.ffmpeg, output);
+        assert!(u16::from(pixel[0]) + u16::from(pixel[1]) > u16::from(pixel[2]) + 50,
+            "{} must contain selected test pattern, not blue: {pixel:?}", output.display());
+    }
+    for shot in &shots { assert_eq!(probe_wh(&tools.ffprobe, shot).await, (96, 64)); }
+    // Offset seeking must select the intended frame, not just any frame from
+    // the right stream. Decode the reference sequentially at absolute PTS 8.
+    let reference = tmp.path().join("reference.png");
+    let result = std::process::Command::new(&tools.ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-copyts", "-i"]).arg(&source)
+        .args(["-map", "0:1", "-ss", "8", "-frames:v", "1"]).arg(&reference).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert_eq!(std::fs::read(&shots[0]).unwrap(), std::fs::read(reference).unwrap());
+}
+
 struct TestEnv {
     tools: mosaic_lib::ffmpeg::Tools,
     fixture: PathBuf,

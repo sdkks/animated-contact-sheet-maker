@@ -30,7 +30,7 @@ pub async fn generate(
     opts.validate().map_err(RunError::Invalid)?;
     info.require_seekable().map_err(RunError::Invalid)?;
     let tmp = tempfile::TempDir::new()?;
-    let timestamps = sample_timestamps(info.duration_secs, opts.count);
+    let timestamps = sample_timestamps(info.sampling_duration_secs(), opts.count);
     let total = opts.count;
 
     let tonemap = crate::ffmpeg::tonemap_filter(ctx.has_zscale, info.video.color_transfer.as_deref(), info.video.dv_profile);
@@ -48,7 +48,7 @@ pub async fn generate(
         let idx = (i as u32) + 1;
         let out = screenshot_path(source, out_dir, opts.format, &opts.suffix, idx, opts.count, &|p| p.exists());
         let mut args = crate::ffmpeg::base_args();
-        args.extend(crate::ffmpeg::seek_input_args(source, *ts));
+        args.extend(crate::ffmpeg::seek_input_args(source, *ts, &info.video));
         args.extend(["-frames:v".into(), "1".into()]);
         let vf: Vec<&str> = [tonemap.as_deref(), sar_scale.as_deref()]
             .into_iter().flatten().collect();

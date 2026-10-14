@@ -46,11 +46,11 @@ pub fn build_extract_args(
     output: &Path,
 ) -> Vec<String> {
     let desired = clip_length_secs as f64;
-    let remaining = (info.duration_secs - timestamp).max(0.0);
+    let remaining = (info.sampling_duration_secs() - timestamp).max(0.0);
     let duration = desired.min(remaining);
 
     let mut args = crate::ffmpeg::base_args();
-    args.extend(crate::ffmpeg::seek_input_args_clip(source, timestamp));
+    args.extend(crate::ffmpeg::seek_input_args_clip(source, timestamp, &info.video));
     args.extend([
         "-t".into(), format!("{:.3}", duration),
     ]);
@@ -172,11 +172,11 @@ pub async fn generate(
 ) -> Result<(), RunError> {
     opts.validate().map_err(RunError::Invalid)?;
     info.require_seekable().map_err(RunError::Invalid)?;
-    let timestamps = crate::layout::sample_clip_timestamps(info.duration_secs, opts.count, opts.clip_length_secs as f64);
+    let timestamps = crate::layout::sample_clip_timestamps(info.sampling_duration_secs(), opts.count, opts.clip_length_secs as f64);
     if timestamps.is_empty() {
         return Err(RunError::Invalid(format!(
             "source duration ({:.2}s) is too short for {}s clips",
-            info.duration_secs, opts.clip_length_secs
+            info.sampling_duration_secs(), opts.clip_length_secs
         )));
     }
     let total_steps = (timestamps.len() as u32) + 1;
@@ -222,6 +222,7 @@ mod tests {
             size_bytes: None,
             bit_rate: None,
             video: crate::video_info::VideoStream {
+                index: 0, duration_secs: None, start_secs: 0.0, seek_offset_secs: 0.0,
                 codec: String::new(),
                 profile: None,
                 width: 1920,

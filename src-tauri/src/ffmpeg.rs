@@ -17,13 +17,16 @@ pub(crate) fn vf_chain(parts: &[Option<&str>]) -> String {
 /// Frame-accurate seeking for single-frame extraction (contact sheets, screenshots).
 /// Uses dual `-ss` with `-copyts`: input-level `-ss` does fast keyframe seek,
 /// `-copyts` preserves original stream timestamps, output-level `-ss` trims to
-/// the exact frame. `-an` strips audio since no extraction pipeline produces audio.
-pub fn seek_input_args(source: &std::path::Path, timestamp: f64) -> Vec<String> {
+/// the exact frame. Timestamps are relative to the selected video's start;
+/// input seeking is format-relative, while `-copyts` output trimming is absolute.
+/// `-map` keeps extraction consistent with probing; no pipeline produces audio.
+pub fn seek_input_args(source: &std::path::Path, timestamp: f64, video: &crate::video_info::VideoStream) -> Vec<String> {
     vec![
-        "-ss".into(), format!("{:.3}", timestamp),
+        "-ss".into(), format!("{:.3}", timestamp + video.seek_offset_secs),
         "-copyts".into(),
         "-i".into(), source.to_string_lossy().into_owned(),
-        "-ss".into(), format!("{:.3}", timestamp),
+        "-ss".into(), format!("{:.3}", timestamp + video.start_secs),
+        "-map".into(), format!("0:{}", video.index),
         "-an".into(),
     ]
 }
@@ -32,10 +35,11 @@ pub fn seek_input_args(source: &std::path::Path, timestamp: f64) -> Vec<String> 
 /// Uses simple input-level `-ss` without `-copyts` — avoids reference-frame loss
 /// on transport streams and other containers with sparse keyframes. A slightly
 /// imprecise clip start (nearest keyframe) is acceptable for clips.
-pub fn seek_input_args_clip(source: &std::path::Path, timestamp: f64) -> Vec<String> {
+pub fn seek_input_args_clip(source: &std::path::Path, timestamp: f64, video: &crate::video_info::VideoStream) -> Vec<String> {
     vec![
-        "-ss".into(), format!("{:.3}", timestamp),
+        "-ss".into(), format!("{:.3}", timestamp + video.seek_offset_secs),
         "-i".into(), source.to_string_lossy().into_owned(),
+        "-map".into(), format!("0:{}", video.index),
         "-an".into(),
     ]
 }
@@ -272,22 +276,26 @@ mod tests {
 
     #[test]
     fn seek_input_args_produces_dual_ss_with_copyts() {
-        let args = seek_input_args(std::path::Path::new("/v/movie.mkv"), 42.5);
+        let video = crate::video_info::parse(r#"{"streams":[{"index":3,"codec_type":"video","start_time":"7"}],"format":{"start_time":"5","duration":"60"}}"#).unwrap().video;
+        let args = seek_input_args(std::path::Path::new("/v/movie.mkv"), 42.5, &video);
         assert_eq!(args, vec![
-            "-ss", "42.500",
+            "-ss", "44.500",
             "-copyts",
             "-i", "/v/movie.mkv",
-            "-ss", "42.500",
+            "-ss", "49.500",
+            "-map", "0:3",
             "-an",
         ]);
     }
 
     #[test]
     fn seek_input_args_clip_has_no_copyts() {
-        let args = seek_input_args_clip(std::path::Path::new("/v/movie.mkv"), 42.5);
+        let video = crate::video_info::parse(r#"{"streams":[{"index":3,"codec_type":"video","start_time":"7"}],"format":{"start_time":"5","duration":"60"}}"#).unwrap().video;
+        let args = seek_input_args_clip(std::path::Path::new("/v/movie.mkv"), 42.5, &video);
         assert_eq!(args, vec![
-            "-ss", "42.500",
+            "-ss", "44.500",
             "-i", "/v/movie.mkv",
+            "-map", "0:3",
             "-an",
         ]);
     }

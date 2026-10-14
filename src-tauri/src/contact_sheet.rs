@@ -51,7 +51,7 @@ pub async fn generate(
     opts.validate().map_err(RunError::Invalid)?;
     info.require_seekable().map_err(RunError::Invalid)?;
     let layout = compute_sheet_layout(opts.cols, opts.rows, opts.width, opts.gap);
-    let timestamps = sample_timestamps(info.duration_secs, layout.total);
+    let timestamps = sample_timestamps(info.sampling_duration_secs(), layout.total);
     let tmp = TempDir::new()?;
     let width_digits = crate::layout::pad_width_for_count(layout.total);
 
@@ -83,7 +83,7 @@ pub async fn generate(
         ));
         let vf = crate::ffmpeg::vf_chain(&[tonemap.as_deref(), Some(&scale), ts_filter.as_deref()]);
         let mut args = crate::ffmpeg::base_args();
-        args.extend(crate::ffmpeg::seek_input_args(source, *ts));
+        args.extend(crate::ffmpeg::seek_input_args(source, *ts, &info.video));
         args.extend([
             "-frames:v".into(), "1".into(),
             "-vf".into(), vf,

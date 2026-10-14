@@ -110,6 +110,7 @@ mod tests {
             size_bytes: Some(1_073_741_824), // 1.00 GiB
             bit_rate: Some(5_000_000),
             video: VideoStream {
+                index: 0, duration_secs: None, start_secs: 0.0, seek_offset_secs: 0.0,
                 codec: "h264".into(),
                 profile: Some("High".into()),
                 width: 1920,
