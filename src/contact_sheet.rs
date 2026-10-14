@@ -1,7 +1,7 @@
 use crate::drawtext::{font_for_ffmpeg, format_hms_escaped, header_overlay, timestamp_overlay};
 use crate::ffmpeg::{run_batch_cancellable, run_cancellable, Need, RunError};
 use crate::header::build_header_lines;
-use crate::jobs::{move_into_place, PipelineContext};
+use crate::jobs::{move_into_place, PipelineContext, PublishOutcome};
 use crate::layout::{checked_sheet_layout, compute_sheet_layout, header_height, line_height, sample_timestamps, thumb_height};
 use crate::output_path::{jpeg_qv, OutputFormat, SheetTheme};
 use crate::video_info::VideoInfo;
@@ -47,7 +47,7 @@ pub async fn generate(
     opts: &SheetOptions,
     font: &Path,
     ctx: &PipelineContext<'_>,
-) -> Result<(), RunError> {
+) -> Result<PublishOutcome, RunError> {
     opts.validate().map_err(RunError::Invalid)?;
     info.require_seekable().map_err(RunError::Invalid)?;
     let layout = compute_sheet_layout(opts.cols, opts.rows, opts.width, opts.gap);
@@ -120,7 +120,7 @@ pub async fn generate(
     run_cancellable(ctx.ffmpeg, &args, ctx.cancelled.clone()).await?;
 
     // 3. Header (optional) + 4. Finalize. The result of this block is a source
-    // path on disk (`final_src`) that we then rename/copy into `output_path`.
+    // path on disk (`final_src`) that we stage and atomically publish.
     let final_src: PathBuf;
     if opts.show_header {
         (ctx.reporter.emit)(layout.total + 2, total_steps, "Header");
@@ -184,7 +184,6 @@ pub async fn generate(
         }
     }
 
-    move_into_place(&final_src, output_path)?;
-    Ok(())
+    move_into_place(&final_src, output_path, ctx).await
 }
 

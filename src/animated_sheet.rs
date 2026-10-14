@@ -1,7 +1,7 @@
 use crate::drawtext::{font_for_ffmpeg, format_hms_escaped, header_overlay, timestamp_overlay};
 use crate::ffmpeg::{run_batch_cancellable, run_cancellable, Need, RunError};
 use crate::header::build_header_lines;
-use crate::jobs::{move_into_place, PipelineContext};
+use crate::jobs::{move_into_place, PipelineContext, PublishOutcome};
 use crate::layout::{checked_sheet_layout, compute_sheet_layout, header_height, line_height, require_nonzero, sample_clip_timestamps, thumb_height, xstack_layout, SheetLayout};
 use crate::output_path::SheetTheme;
 use crate::video_info::VideoInfo;
@@ -171,7 +171,7 @@ pub async fn generate(
     opts: &AnimatedSheetOptions,
     font: &Path,
     ctx: &PipelineContext<'_>,
-) -> Result<(), RunError> {
+) -> Result<PublishOutcome, RunError> {
     opts.validate().map_err(RunError::Invalid)?;
     info.require_seekable().map_err(RunError::Invalid)?;
     let layout = compute_sheet_layout(opts.cols, opts.rows, opts.width, opts.gap);
@@ -238,8 +238,7 @@ pub async fn generate(
         opts.clip_length_secs, opts.fps, opts.quality, &staged,
     );
     run_cancellable(ctx.ffmpeg, &args, ctx.cancelled.clone()).await?;
-    move_into_place(&staged, out)?;
-    Ok(())
+    move_into_place(&staged, out, ctx).await
 }
 
 #[cfg(test)]
@@ -420,7 +419,7 @@ mod tests {
         assert!(graph.starts_with("[0:v][1:v][2:v][3:v][4:v][5:v]xstack=inputs=6:"));
     }
 
-    fn invoke_generate_with_grid(cols: u32, rows: u32) -> Result<(), RunError> {
+    fn invoke_generate_with_grid(cols: u32, rows: u32) -> Result<PublishOutcome, RunError> {
         let info = sample_info(60.0, 1920, 1080);
         let opts = AnimatedSheetOptions {
             cols, rows, width: 1280, gap: 4,
@@ -434,6 +433,7 @@ mod tests {
         let font = Path::new("/bin/false");
         let reporter = crate::jobs::ProgressReporter { emit: &|_, _, _| {} };
         let ctx = PipelineContext {
+            output_policy: Default::default(),
             ffmpeg: Path::new("/bin/false"),
             cancelled: Arc::new(AtomicBool::new(false)),
             reporter: &reporter,

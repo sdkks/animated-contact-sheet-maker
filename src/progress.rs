@@ -38,5 +38,8 @@ impl Reporter {
         }
     }
 
+    /// Print durable status without disturbing active bars (including redirected stderr).
+    pub fn message(&self, message: &str) { self._mp.suspend(|| eprintln!("{message}")); }
+
     pub fn finish(&self) { self.step.finish_and_clear(); self.file.finish_and_clear(); }
 }

@@ -7,8 +7,8 @@ use acsm::{
     defaults,
     ffmpeg::RunError,
     ffmpeg_test_hook_locate, ffmpeg_test_hook_probe,
-    jobs::{PipelineContext, ProgressReporter},
-    output_path::DEFAULT_SHOTS_SUFFIX,
+    jobs::{OutputPolicy, PipelineContext, ProgressReporter},
+    output_path::{screenshot_path, DEFAULT_SHOTS_SUFFIX},
     screenshots::{generate, ScreenshotsOptions},
 };
 use std::sync::Arc;
@@ -19,7 +19,7 @@ pub async fn run(args: ScreenshotsArgs, cfg: &Config) -> i32 {
         Ok(t) => t,
         Err(e) => { eprintln!("{e}"); crate::hints::print_tool_install_hint(); return 2; }
     };
-    let inputs = match inputs::expand(&args.shared.inputs, !args.shared.no_recursive) {
+    let inputs = match inputs::expand(&args.shared.inputs, !args.shared.no_recursive, args.shared.null) {
         Ok(v) => v, Err(e) => { eprintln!("{e}"); return 2; }
     };
     if inputs.is_empty() { eprintln!("no input files"); return 2; }
@@ -58,34 +58,54 @@ pub async fn run(args: ScreenshotsArgs, cfg: &Config) -> i32 {
 
     let mut done = 0u64;
     let mut failed = 0u64;
+    let mut skipped = 0u64;
+    let output_policy = if args.shared.overwrite_existing { OutputPolicy::OverwriteExisting } else { OutputPolicy::SkipExisting };
     for (i, src) in inputs.iter().enumerate() {
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) { break; }
         let idx = i as u64 + 1;
         reporter.start_file(idx, total, src);
+        let out_dir = inputs::out_dir(&args.shared, src);
+        let all_existing = (1..=count).try_fold(true, |all, idx| {
+            let path = screenshot_path(src, &out_dir, fmt, &opts.suffix, idx, count, &|_| false);
+            output_policy.should_skip(&path).map(|skip| all && skip)
+        });
+        match all_existing {
+            Ok(true) => {
+                skipped += 1;
+                if !args.shared.quiet { reporter.message(&format!("{}: 0 images produced · {count} images skipped (already exist)", src.display())); }
+                continue;
+            }
+            Ok(false) => {}
+            Err(e) => { eprintln!("{}: {e}", src.display()); failed += 1; continue; }
+        }
         let info = match ffmpeg_test_hook_probe(&tools, &src.to_string_lossy()).await {
             Ok(v) => v,
             Err(e) => { eprintln!("{}: {e}", src.display()); failed += 1; continue; }
         };
-        let out_dir = inputs::out_dir(&args.shared, src);
         let ctx = PipelineContext {
+            output_policy,
             ffmpeg: &tools.ffmpeg,
             cancelled: cancelled.clone(),
             reporter: &pr,
             has_zscale,
         };
-        match generate(src, &info, &out_dir, &opts, &ctx).await {
-            Ok(paths) => {
-                for p in paths { println!("{}", p.display()); }
-                done += 1;
-            }
-            Err(RunError::Killed) => { /* cancellation — don't count as failed */ }
+        let report = generate(src, &info, &out_dir, &opts, &ctx).await;
+        for p in &report.written { println!("{}", p.display()); }
+        if !args.shared.quiet {
+            reporter.message(&format!("{}: {} images produced · {} images skipped (already exist)", src.display(), report.written.len(), report.skipped));
+        }
+        match report.result {
+            Ok(()) if report.written.is_empty() => { skipped += 1; }
+            Ok(()) => { done += 1; }
+            Err(RunError::Killed) => { cancelled.store(true, std::sync::atomic::Ordering::Relaxed); }
             Err(e) => { eprintln!("{}: {e}", src.display()); failed += 1; }
         }
         if cancelled.load(std::sync::atomic::Ordering::Relaxed) { break; }
     }
     reporter.finish();
     if !args.shared.quiet {
-        eprintln!("{done} done · {failed} failed · {} cancelled",
-                  if cancelled.load(std::sync::atomic::Ordering::Relaxed) { total - done - failed } else { 0 });
+        eprintln!("{done} done · {skipped} skipped · {failed} failed · {} cancelled",
+                  if cancelled.load(std::sync::atomic::Ordering::Relaxed) { total - done - skipped - failed } else { 0 });
     }
     if cancelled.load(std::sync::atomic::Ordering::Relaxed) { return 130; }
     if failed > 0 { 1 } else { 0 }

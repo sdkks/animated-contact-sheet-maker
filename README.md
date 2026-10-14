@@ -85,7 +85,29 @@ acsm probe --mediainfo movie.mkv
 cargo run --locked -- sheet movie.mkv
 ```
 
-Output paths go to **stdout**; progress, errors and run summaries go to **stderr**. Use `--quiet` to suppress progress or `--verbose` to inspect ffmpeg arguments. Each subcommand's `--help` lists its options.
+Successfully published output paths go to **stdout**; progress, errors and run summaries go to **stderr**. Use `--quiet` to suppress progress and summaries (not errors or produced paths), or `--verbose` to inspect ffmpeg arguments. Summary counts refer to input videos; screenshots also report images produced/skipped per video. Each subcommand's `--help` lists its options.
+
+### Batch input and resuming
+
+All four rendering commands accept files/directories and one literal `-` to read a path list from stdin at that position:
+
+```sh
+printf '%s\n' './first video.mkv' './second.mp4' | acsm sheet -
+acsm reel - < paths.txt
+find ./videos -type f -name '*.mkv' -print0 | acsm screenshots --null -
+acsm sheet ./before.mkv - ./after.mkv < paths.txt
+acsm animated-sheet --overwrite-existing - < paths.txt
+```
+
+Lists use LF or CRLF by default; `--null` (or `-0`) selects NUL separation and preserves literal CR/LF in filenames. Empty records are ignored; a final record needs no terminator. Paths must be UTF-8. Spaces, quotes, backslashes and Unicode are literal, not shell syntax; paths are relative to the current directory and directories use the usual scanning/recursion rules. A list record `-` names a literal file; use `./-` for that file directly on the command line. Repeated argv `-` markers and `--null` without `-` are input errors. No marker means stdin is not read. Probe remains single-input JSON.
+
+Existing exact output names are skipped regardless of contents or the options that produced them. Use `--overwrite-existing` to regenerate them. No numbered duplicate is created merely because an output exists; older numbered files are left alone. Screenshots resume individually, retaining the original requested indices and timestamps. Two inputs targeting the same output name follow the same policy: the first wins by default, or the last successfully published overwrite wins.
+
+Each completed media file is prepared privately on its destination filesystem and then published without exposing partial contents. Default publication cannot overwrite another writer that wins the same name; explicit overwrite replaces only after preparation succeeds. Failures or cancellation before commit preserve the old output. Existing symlinks are skipped by default; overwrite replaces the link itself, not its target. Directories and special-file obstructions are errors.
+
+Atomicity is **per file**, not batch rollback or power-loss durability. Earlier published files remain and their paths are reported if later work fails. Cancellation during an entered commit cannot undo it; cancellation during a blocking copy may wait for that copy before discarding the prepared file. Rename preserves rendered metadata; cross-filesystem copying preserves bytes and source permission bits, not a portable guarantee for all timestamps/ACLs/xattrs. Unsupported publication operations fail safely rather than copying directly over an existing output.
+
+All-skipped runs exit 0 after normal startup validation; processing errors exit 1, setup/input errors 2, cancellation 130. Stdout remains newline-framed, even with `--null` input, so output paths containing newlines are not unambiguously line-delimited.
 
 Configuration uses `~/.acsm.toml`, created with commented defaults on first normal run. Override its location with `ACSM_CONFIG`. CLI options take precedence over configuration values. This is a clean identity break: previous config paths and environment variables are not read or migrated automatically. Existing user files are left untouched.
 
@@ -95,7 +117,7 @@ Use the global `--tmp-dir PATH` before or after a subcommand to place temporary 
 acsm --tmp-dir /mnt/disk/scratch sheet movie.mkv -o ./sheets
 ```
 
-This does not change final output locations, create the scratch directory, or guarantee sufficient free space. Without it, platform-default temporary storage is used. Help, completions and man-page generation do not access the temporary directory, config file or media tools:
+This does not change final output locations, create the scratch directory, or guarantee sufficient free space. Without it, platform-default temporary storage is used. Final publication staging always lives in the destination directory, independently of `--tmp-dir`, and needs enough free space for the replacement alongside any old output. Help, completions and man-page generation do not access the temporary directory, config file or media tools:
 
 ```sh
 acsm completions bash > acsm.bash

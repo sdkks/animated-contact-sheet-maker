@@ -13,8 +13,8 @@ use std::path::PathBuf;
     after_help = "Config file: ~/.acsm.toml (auto-created on first run; override path with $ACSM_CONFIG).\nDocs: https://github.com/sdkks/animated-contact-sheet-maker#usage"
 )]
 pub struct Cli {
-    /// Directory for temporary media and fonts (must exist and be writable).
-    /// Use a disk-backed directory when system temp space is small; final output paths are unchanged.
+    /// Directory for intermediate media and fonts (must exist and be writable).
+    /// Final files are staged in their destination directory for atomic publication.
     #[arg(long, global = true, value_name = "PATH")]
     pub tmp_dir: Option<PathBuf>,
     #[command(subcommand)]
@@ -38,7 +38,7 @@ pub struct Shared {
     /// Output directory (defaults to next to each source file).
     #[arg(short, long)]
     pub output: Option<PathBuf>,
-    /// Suppress progress bars.
+    /// Suppress progress and summaries (errors and produced paths are still printed).
     #[arg(short, long)]
     pub quiet: bool,
     /// Print ffmpeg args before each invocation.
@@ -47,7 +47,14 @@ pub struct Shared {
     /// Do not descend into subdirectories when inputs are directories.
     #[arg(long)]
     pub no_recursive: bool,
-    /// Input files or directories (at least one required).
+    /// Read NUL-separated stdin paths instead of lines. Requires '-' as an input.
+    #[arg(short = '0', long)]
+    pub null: bool,
+    /// Replace exact outputs only after new files are ready. Default: skip existing outputs.
+    /// Screenshots are handled individually.
+    #[arg(long)]
+    pub overwrite_existing: bool,
+    /// Input files or directories. Use '-' once for stdin paths (LF/CRLF, or --null).
     #[arg(required = true)]
     pub inputs: Vec<PathBuf>,
 }

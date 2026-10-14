@@ -7,7 +7,7 @@ use acsm::{
     defaults,
     ffmpeg::{RunError},
     ffmpeg_test_hook_locate, ffmpeg_test_hook_probe,
-    jobs::{PipelineContext, ProgressReporter},
+    jobs::{OutputPolicy, PublishOutcome, PipelineContext, ProgressReporter},
     output_path::{preview_reel_path, DEFAULT_PREVIEW_SUFFIX},
     preview_reel::{generate, PreviewOptions},
 };
@@ -19,7 +19,7 @@ pub async fn run(args: ReelArgs, cfg: &Config) -> i32 {
         Ok(t) => t,
         Err(e) => { eprintln!("{e}"); crate::hints::print_tool_install_hint(); return 2; }
     };
-    let inputs = match inputs::expand(&args.shared.inputs, !args.shared.no_recursive) {
+    let inputs = match inputs::expand(&args.shared.inputs, !args.shared.no_recursive, args.shared.null) {
         Ok(v) => v, Err(e) => { eprintln!("{e}"); return 2; }
     };
     if inputs.is_empty() { eprintln!("no input files"); return 2; }
@@ -59,33 +59,46 @@ pub async fn run(args: ReelArgs, cfg: &Config) -> i32 {
 
     let mut done = 0u64;
     let mut failed = 0u64;
-    let exists = |p: &std::path::Path| p.exists();
+    let mut skipped = 0u64;
+    let output_policy = if args.shared.overwrite_existing { OutputPolicy::OverwriteExisting } else { OutputPolicy::SkipExisting };
     for (i, src) in inputs.iter().enumerate() {
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) { break; }
         let idx = i as u64 + 1;
         reporter.start_file(idx, total, src);
+        let out_dir = inputs::out_dir(&args.shared, src);
+        let out_path = preview_reel_path(src, &out_dir, opts.format, &opts.suffix, &|_| false);
+        match output_policy.should_skip(&out_path) {
+            Ok(true) => {
+                skipped += 1;
+                if !args.shared.quiet { reporter.message(&format!("{}: skipped (output exists: {})", src.display(), out_path.display())); }
+                continue;
+            }
+            Ok(false) => {}
+            Err(e) => { eprintln!("{}: {e}", src.display()); failed += 1; continue; }
+        }
         let info = match ffmpeg_test_hook_probe(&tools, &src.to_string_lossy()).await {
             Ok(v) => v,
             Err(e) => { eprintln!("{}: {e}", src.display()); failed += 1; continue; }
         };
-        let out_dir = inputs::out_dir(&args.shared, src);
-        let out_path = preview_reel_path(src, &out_dir, opts.format, &opts.suffix, &exists);
         let ctx = PipelineContext {
+            output_policy,
             ffmpeg: &tools.ffmpeg,
             cancelled: cancelled.clone(),
             reporter: &pr,
             has_zscale,
         };
         match generate(src, &info, &out_path, &opts, &ctx).await {
-            Ok(()) => { println!("{}", out_path.display()); done += 1; }
-            Err(RunError::Killed) => { /* cancellation — don't count as failed */ }
+            Ok(PublishOutcome::Written) => { println!("{}", out_path.display()); done += 1; }
+            Ok(PublishOutcome::Skipped) => { skipped += 1; }
+            Err(RunError::Killed) => { cancelled.store(true, std::sync::atomic::Ordering::Relaxed); }
             Err(e) => { eprintln!("{}: {e}", src.display()); failed += 1; }
         }
         if cancelled.load(std::sync::atomic::Ordering::Relaxed) { break; }
     }
     reporter.finish();
     if !args.shared.quiet {
-        eprintln!("{done} done · {failed} failed · {} cancelled",
-                  if cancelled.load(std::sync::atomic::Ordering::Relaxed) { total - done - failed } else { 0 });
+        eprintln!("{done} done · {skipped} skipped · {failed} failed · {} cancelled",
+                  if cancelled.load(std::sync::atomic::Ordering::Relaxed) { total - done - skipped - failed } else { 0 });
     }
     if cancelled.load(std::sync::atomic::Ordering::Relaxed) { return 130; }
     if failed > 0 { 1 } else { 0 }

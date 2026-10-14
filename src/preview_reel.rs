@@ -1,5 +1,5 @@
 use crate::ffmpeg::{run_batch_cancellable, Need, RunError};
-use crate::jobs::{move_into_place, PipelineContext};
+use crate::jobs::{move_into_place, PipelineContext, PublishOutcome};
 use crate::layout::require_nonzero;
 use crate::output_path::{vp9_crf, ReelFormat};
 use crate::video_info::VideoInfo;
@@ -169,7 +169,7 @@ pub async fn generate(
     out: &Path,
     opts: &PreviewOptions,
     ctx: &PipelineContext<'_>,
-) -> Result<(), RunError> {
+) -> Result<PublishOutcome, RunError> {
     opts.validate().map_err(RunError::Invalid)?;
     info.require_seekable().map_err(RunError::Invalid)?;
     let timestamps = crate::layout::sample_clip_timestamps(info.sampling_duration_secs(), opts.count, opts.clip_length_secs as f64);
@@ -206,8 +206,7 @@ pub async fn generate(
     let staged = tmp.path().join(format!("reel.{}", opts.format.ext()));
     let args = build_stitch_args(&concat_list, opts.fps, opts.quality, opts.format, &staged);
     crate::ffmpeg::run_cancellable(ctx.ffmpeg, &args, ctx.cancelled.clone()).await?;
-    move_into_place(&staged, out)?;
-    Ok(())
+    move_into_place(&staged, out, ctx).await
 }
 
 #[cfg(test)]

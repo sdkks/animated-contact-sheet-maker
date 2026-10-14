@@ -103,7 +103,7 @@ async fn both_header_pipelines_render_literal_synthetic_filename_and_cancel() {
             }
         };
         let reporter = ProgressReporter { emit: &emit };
-        let ctx = PipelineContext { ffmpeg: &tools.ffmpeg, cancelled: cancelled.clone(), reporter: &reporter, has_zscale: false };
+        let ctx = PipelineContext { output_policy: Default::default(), ffmpeg: &tools.ffmpeg, cancelled: cancelled.clone(), reporter: &reporter, has_zscale: false };
         let out = tmp.path().join(format!("sheet-{cancel_at_header}.png"));
         let result = contact_sheet::generate(&source, &info, &out, &sheet, &font_path(), &ctx).await;
         if cancel_at_header {
@@ -141,7 +141,7 @@ async fn selected_video_shorter_than_audio_renders_all_pipelines() {
     let info = acsm::ffmpeg_test_hook_probe(&tools, &source.to_string_lossy()).await.unwrap();
     assert!(info.duration_secs >= 8.0, "container metadata remains unchanged");
     let reporter = ProgressReporter { emit: &|_, _, _| {} };
-    let ctx = PipelineContext { ffmpeg: &tools.ffmpeg, cancelled: Arc::new(AtomicBool::new(false)), reporter: &reporter, has_zscale: false };
+    let ctx = PipelineContext { output_policy: Default::default(), ffmpeg: &tools.ffmpeg, cancelled: Arc::new(AtomicBool::new(false)), reporter: &reporter, has_zscale: false };
     let animated = tmp.path().join("animated.webp");
     animated_sheet::generate(&source, &info, &animated, &AnimatedSheetOptions {
         cols: 6, rows: 4, width: 384, gap: 2, clip_length_secs: 1, fps: 4, quality: 60,
@@ -156,7 +156,9 @@ async fn selected_video_shorter_than_audio_renders_all_pipelines() {
     }, &font_path(), &ctx).await.unwrap();
     let shots = screenshots::generate(&source, &info, &tmp.path().join("shots"), &ScreenshotsOptions {
         count: 24, format: OutputFormat::Png, jpeg_quality: 92, suffix: String::new(),
-    }, &ctx).await.unwrap();
+    }, &ctx).await;
+    shots.result.unwrap();
+    let shots = shots.written;
     assert_eq!(shots.len(), 24);
     for shot in shots { assert_eq!(probe_wh(&tools.ffprobe, &shot).await, (96, 64)); }
     preview_reel::generate(&source, &info, &tmp.path().join("reel.webm"), &PreviewOptions {
@@ -203,10 +205,12 @@ async fn selected_video_delayed_mkv_container_fallback_renders_all_pipelines() {
     assert_eq!(info.duration_source, acsm::video_info::DurationSource::Container);
     assert!(info.require_seekable().is_ok());
     let reporter = ProgressReporter { emit: &|_, _, _| {} };
-    let ctx = PipelineContext { ffmpeg: &tools.ffmpeg, cancelled: Arc::new(AtomicBool::new(false)), reporter: &reporter, has_zscale: false };
+    let ctx = PipelineContext { output_policy: Default::default(), ffmpeg: &tools.ffmpeg, cancelled: Arc::new(AtomicBool::new(false)), reporter: &reporter, has_zscale: false };
     let shots = screenshots::generate(&source, &info, &tmp.path().join("shots"), &ScreenshotsOptions {
         count: 24, format: OutputFormat::Png, jpeg_quality: 92, suffix: String::new(),
-    }, &ctx).await.expect("all 24 screenshots must remain inside the delayed video's range");
+    }, &ctx).await;
+    shots.result.expect("all 24 screenshots must remain inside the delayed video's range");
+    let shots = shots.written;
     assert_eq!(shots.len(), 24);
     for shot in shots { assert_eq!(probe_wh(&tools.ffprobe, &shot).await, (96, 64)); }
     let sheet = tmp.path().join("sheet.png");
@@ -304,7 +308,7 @@ async fn selected_video_mapping_and_offsets_match_in_all_pipelines() {
     assert_eq!(info.video.start_secs, selected_start);
     assert!((info.video.seek_offset_secs - (selected_start - format_start)).abs() < 1e-9);
     let reporter = ProgressReporter { emit: &|_, _, _| {} };
-    let ctx = PipelineContext { ffmpeg: &tools.ffmpeg, cancelled: Arc::new(AtomicBool::new(false)), reporter: &reporter, has_zscale: false };
+    let ctx = PipelineContext { output_policy: Default::default(), ffmpeg: &tools.ffmpeg, cancelled: Arc::new(AtomicBool::new(false)), reporter: &reporter, has_zscale: false };
     let sheet = tmp.path().join("sheet.png");
     contact_sheet::generate(&source, &info, &sheet, &SheetOptions {
         cols: 2, rows: 1, width: 192, gap: 2, thumb_font_size: 14, header_font_size: 16,
@@ -313,7 +317,9 @@ async fn selected_video_mapping_and_offsets_match_in_all_pipelines() {
     }, &font_path(), &ctx).await.unwrap();
     let shots = screenshots::generate(&source, &info, &tmp.path().join("shots"), &ScreenshotsOptions {
         count: 3, format: OutputFormat::Png, jpeg_quality: 92, suffix: String::new(),
-    }, &ctx).await.unwrap();
+    }, &ctx).await;
+    shots.result.unwrap();
+    let shots = shots.written;
     let animated = tmp.path().join("animated.webp");
     animated_sheet::generate(&source, &info, &animated, &AnimatedSheetOptions {
         cols: 2, rows: 1, width: 192, gap: 2, clip_length_secs: 1, fps: 4, quality: 60,
@@ -357,6 +363,7 @@ struct TestEnv {
 impl TestEnv {
     fn ctx<'a>(&'a self, reporter: &'a ProgressReporter<'a>) -> PipelineContext<'a> {
         PipelineContext {
+            output_policy: Default::default(),
             ffmpeg: &self.tools.ffmpeg,
             cancelled: Arc::new(AtomicBool::new(false)),
             reporter,
@@ -410,7 +417,9 @@ async fn all_pipelines_preserve_aspect_on_anamorphic_sample() {
         count: 2, format: OutputFormat::Png, jpeg_quality: 92, suffix: String::new(),
     };
     let shots = screenshots::generate(&env.fixture, &env.info, &shots_dir, &shots_opts, &ctx)
-        .await.expect("screenshots failed");
+        .await;
+    shots.result.expect("screenshots failed");
+    let shots = shots.written;
     for shot in &shots {
         let (w, h) = probe_wh(&env.tools.ffprobe, shot).await;
         assert_eq!((w, h), (606, 1080), "screenshot {:?} has wrong dims {}×{}", shot, w, h);
@@ -475,7 +484,9 @@ async fn landscape_source_still_renders_landscape() {
     let shots_dir = env.tmp.path().join("shots");
     let shots = screenshots::generate(&env.fixture, &env.info, &shots_dir, &ScreenshotsOptions {
         count: 1, format: OutputFormat::Png, jpeg_quality: 92, suffix: String::new(),
-    }, &ctx).await.expect("shots");
+    }, &ctx).await;
+    shots.result.expect("shots");
+    let shots = shots.written;
     let (w, h) = probe_wh(&env.tools.ffprobe, &shots[0]).await;
     assert_eq!((w, h), (3840, 2160), "landscape screenshot should be source res");
 }
@@ -538,7 +549,9 @@ async fn end_to_end_contact_sheet_and_screenshots() {
     let shots_opts = ScreenshotsOptions {
         count: 3, format: OutputFormat::Png, jpeg_quality: 92, suffix: String::new(),
     };
-    let outs = screenshots::generate(&env.fixture, &env.info, &shots_dir, &shots_opts, &ctx).await.unwrap();
+    let outs = screenshots::generate(&env.fixture, &env.info, &shots_dir, &shots_opts, &ctx).await;
+    outs.result.unwrap();
+    let outs = outs.written;
     assert_eq!(outs.len(), 3);
     for p in outs { assert!(p.exists()); }
 }
