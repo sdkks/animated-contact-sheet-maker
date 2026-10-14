@@ -1,0 +1,6 @@
+# GitHub-hosted GA label missing from actionlint's runner catalog:
+# https://github.com/actions/runner-images/issues/14747
+# This lint-only setting does not select self-hosted runners.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04

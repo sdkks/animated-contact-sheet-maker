@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
 
@@ -50,7 +50,7 @@ jobs:
 
   # Build on native x86_64, not under local architecture emulation.
   musl:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
 
@@ -99,7 +99,7 @@ jobs:
         run: sha256sum acsm-linux-x86_64-musl > acsm-linux-x86_64-musl.sha256
 
       - name: Upload downloadable musl CLI
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: acsm-linux-x86_64-musl
           path: |
