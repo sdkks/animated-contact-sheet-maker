@@ -87,6 +87,25 @@ cargo run --locked -- sheet movie.mkv
 
 Successfully published output paths go to **stdout**; progress, errors and run summaries go to **stderr**. Use `--quiet` to suppress progress and summaries (not errors or produced paths), or `--verbose` to inspect ffmpeg arguments. Summary counts refer to input videos; screenshots also report images produced/skipped per video. Each subcommand's `--help` lists its options.
 
+### Animated-sheet compression effort
+
+`animated-sheet --compression-effort` accepts integers from 0 to 6. The default is 4 when neither CLI nor config sets it; 0 is the lowest effort, not automatic. Effort is independent of `--quality`, FPS and dimensions. Lower effort can encode faster, but may produce larger files and different decoded pixels; it does not promise equivalent image quality or a fixed whole-job speedup.
+
+Changing effort does not regenerate existing outputs. To replace outputs you own:
+
+```sh
+acsm animated-sheet movie.mkv --compression-effort 1 --overwrite-existing
+```
+
+To set a config default, add this key to your existing `[animated_sheet]` section in `~/.acsm.toml` (or the file selected by `ACSM_CONFIG`):
+
+```toml
+[animated_sheet]
+compression_effort = 1
+```
+
+An explicit CLI value, including 0, overrides valid config. Config is validated before overrides are applied, so an invalid config value must be corrected even when a valid CLI value is supplied. Existing config files are not rewritten.
+
 ### Batch input and resuming
 
 All four rendering commands accept files/directories and one literal `-` to read a path list from stdin at that position:

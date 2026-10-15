@@ -255,6 +255,7 @@ async fn all_renderers_preserve_old_output_on_render_failure_and_cancellation() 
                 }, &ctx).await.map(|_| ()),
                 _ => animated_sheet::generate(&source, &info, &out, &animated_sheet::AnimatedSheetOptions {
                     cols: 2, rows: 1, width: 320, gap: 2, clip_length_secs: 1, fps: 2, quality: 60,
+                    compression_effort: acsm::defaults::animated_sheet::COMPRESSION_EFFORT,
                     thumb_font_size: 14, header_font_size: 16, show_timestamps: false, show_header: false,
                     suffix: String::new(), theme: Default::default(),
                 }, &font, &ctx).await.map(|_| ()),

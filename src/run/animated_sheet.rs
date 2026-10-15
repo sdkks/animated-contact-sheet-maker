@@ -55,6 +55,7 @@ pub async fn run(args: AnimatedSheetArgs, cfg: &Config) -> i32 {
         clip_length_secs: args.clip_length.or(cfg.animated_sheet.clip_length_secs).unwrap_or(defaults::animated_sheet::CLIP_LENGTH_SECS),
         fps:              args.fps.or(cfg.animated_sheet.fps).unwrap_or(defaults::animated_sheet::FPS),
         quality:          args.quality.or(cfg.animated_sheet.quality).unwrap_or(defaults::animated_sheet::QUALITY),
+        compression_effort: args.compression_effort.or(cfg.animated_sheet.compression_effort).unwrap_or(defaults::animated_sheet::COMPRESSION_EFFORT),
         thumb_font_size:  args.thumb_font.or(cfg.animated_sheet.thumb_font).unwrap_or(defaults::animated_sheet::THUMB_FONT),
         header_font_size: args.header_font.or(cfg.animated_sheet.header_font).unwrap_or(defaults::animated_sheet::HEADER_FONT),
         show_timestamps:  resolve_bool(args.timestamps, args.no_timestamps, cfg.animated_sheet.show_timestamps, true),

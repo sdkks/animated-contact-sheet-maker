@@ -36,6 +36,7 @@ pub mod animated_sheet {
     pub const CLIP_LENGTH_SECS: u32 = 2;
     pub const FPS: u32 = 12;
     pub const QUALITY: u32 = 75;
+    pub const COMPRESSION_EFFORT: u32 = 4;
     pub const THUMB_FONT: u32 = 14;
     pub const HEADER_FONT: u32 = 18;
     pub const THEME: &str = "dark";
@@ -66,5 +67,6 @@ mod tests {
     fn animated_sheet_has_expected_values() {
         assert_eq!(animated_sheet::COLS, 3);
         assert_eq!(animated_sheet::FPS, 12);
+        assert_eq!(animated_sheet::COMPRESSION_EFFORT, 4);
     }
 }

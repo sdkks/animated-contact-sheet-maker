@@ -91,6 +91,7 @@ async fn both_header_pipelines_render_literal_synthetic_filename_and_cancel() {
         suffix: String::new(), theme: SheetTheme::Dark,
     };
     let animated = AnimatedSheetOptions {
+        compression_effort: acsm::defaults::animated_sheet::COMPRESSION_EFFORT,
         cols: 2, rows: 1, width: 1024, gap: 4, clip_length_secs: 1, fps: 4, quality: 60,
         thumb_font_size: 14, header_font_size: 16, show_timestamps: true, show_header: true,
         suffix: String::new(), theme: SheetTheme::Dark,
@@ -145,6 +146,7 @@ async fn selected_video_shorter_than_audio_renders_all_pipelines() {
     let animated = tmp.path().join("animated.webp");
     animated_sheet::generate(&source, &info, &animated, &AnimatedSheetOptions {
         cols: 6, rows: 4, width: 384, gap: 2, clip_length_secs: 1, fps: 4, quality: 60,
+        compression_effort: acsm::defaults::animated_sheet::COMPRESSION_EFFORT,
         thumb_font_size: 14, header_font_size: 16, show_timestamps: false, show_header: false,
         suffix: String::new(), theme: SheetTheme::Dark,
     }, &font_path(), &ctx).await.expect("24-cell animated sheet must not sample the audio-only tail");
@@ -224,6 +226,7 @@ async fn selected_video_delayed_mkv_container_fallback_renders_all_pipelines() {
     let animated = tmp.path().join("animated.webp");
     animated_sheet::generate(&source, &info, &animated, &AnimatedSheetOptions {
         cols: 6, rows: 4, width: 384, gap: 2, clip_length_secs: 1, fps: 4, quality: 60,
+        compression_effort: acsm::defaults::animated_sheet::COMPRESSION_EFFORT,
         thumb_font_size: 14, header_font_size: 16, show_timestamps: false, show_header: false,
         suffix: String::new(), theme: SheetTheme::Dark,
     }, &font_path(), &ctx).await.unwrap();
@@ -323,6 +326,7 @@ async fn selected_video_mapping_and_offsets_match_in_all_pipelines() {
     let animated = tmp.path().join("animated.webp");
     animated_sheet::generate(&source, &info, &animated, &AnimatedSheetOptions {
         cols: 2, rows: 1, width: 192, gap: 2, clip_length_secs: 1, fps: 4, quality: 60,
+        compression_effort: acsm::defaults::animated_sheet::COMPRESSION_EFFORT,
         thumb_font_size: 14, header_font_size: 16, show_timestamps: false, show_header: false,
         suffix: String::new(), theme: SheetTheme::Dark,
     }, &font_path(), &ctx).await.unwrap();
@@ -427,6 +431,7 @@ async fn all_pipelines_preserve_aspect_on_anamorphic_sample() {
 
     let anim_out = env.tmp.path().join("anim.webp");
     let anim_opts = AnimatedSheetOptions {
+        compression_effort: acsm::defaults::animated_sheet::COMPRESSION_EFFORT,
         cols: 2, rows: 2, width: 640, gap: 6,
         clip_length_secs: 1, fps: 8, quality: 60,
         thumb_font_size: 14, header_font_size: 16,
@@ -607,6 +612,7 @@ async fn end_to_end_animated_contact_sheet() {
     let out = env.tmp.path().join("sample_animated_sheet.webp");
     let opts = AnimatedSheetOptions {
         cols: 2, rows: 2, width: 640, gap: 8,
+        compression_effort: acsm::defaults::animated_sheet::COMPRESSION_EFFORT,
         clip_length_secs: 1, fps: 8, quality: 60,
         thumb_font_size: 12, header_font_size: 14,
         show_timestamps: true, show_header: true,
@@ -629,6 +635,7 @@ async fn end_to_end_animated_contact_sheet_no_header() {
     let out = env.tmp.path().join("sample_bare.webp");
     let opts = AnimatedSheetOptions {
         cols: 2, rows: 2, width: 480, gap: 0,
+        compression_effort: acsm::defaults::animated_sheet::COMPRESSION_EFFORT,
         clip_length_secs: 1, fps: 6, quality: 60,
         thumb_font_size: 12, header_font_size: 14,
         show_timestamps: false, show_header: false,

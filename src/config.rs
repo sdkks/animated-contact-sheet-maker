@@ -86,6 +86,7 @@ pub struct AnimatedSheetCfg {
     pub clip_length_secs: Option<u32>,
     pub fps: Option<u32>,
     pub quality: Option<u32>,
+    pub compression_effort: Option<u32>,
     pub thumb_font: Option<u32>,
     pub header_font: Option<u32>,
     pub show_timestamps: Option<bool>,
@@ -193,6 +194,7 @@ fn warn_unknown_keys(raw: &toml::Value, path: &Path) {
                 "clip_length_secs",
                 "fps",
                 "quality",
+                "compression_effort",
                 "thumb_font",
                 "header_font",
                 "show_timestamps",
@@ -277,6 +279,7 @@ fn template() -> &'static str {
         "# clip_length_secs = 2\n",
         "# fps = 12\n",
         "# quality = 75\n",
+        "# compression_effort = 4 # 0-6; 0 = lowest effort, not auto\n",
         "# thumb_font = 14\n",
         "# header_font = 18\n",
         "# show_timestamps = true\n",
@@ -316,6 +319,7 @@ impl Config {
         check_range("animated_sheet.clip_length_secs", self.animated_sheet.clip_length_secs, 1, 60)?;
         check_range("animated_sheet.fps", self.animated_sheet.fps, 1, 120)?;
         check_range("animated_sheet.quality", self.animated_sheet.quality, 0, 100)?;
+        check_range("animated_sheet.compression_effort", self.animated_sheet.compression_effort, 0, 6)?;
         check_range("animated_sheet.thumb_font", self.animated_sheet.thumb_font, 8, 72)?;
         check_range("animated_sheet.header_font", self.animated_sheet.header_font, 8, 72)?;
         Ok(())
@@ -335,6 +339,22 @@ fn check_range(key: &str, value: Option<u32>, min: u32, max: u32) -> Result<(), 
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn compression_effort_template_matches_default() {
+        assert!(template().contains(&format!("# compression_effort = {} # 0-6; 0 = lowest effort, not auto", acsm::defaults::animated_sheet::COMPRESSION_EFFORT)));
+        let cfg = parse(template(), Path::new("config.toml")).unwrap();
+        assert!(cfg.animated_sheet.compression_effort.is_none());
+    }
+
+    #[test]
+    fn compression_effort_config_validates_every_supported_value() {
+        for effort in 0..=6 {
+            let cfg = parse(&format!("[animated_sheet]\ncompression_effort = {effort}\n"), Path::new("config.toml")).unwrap();
+            assert_eq!(cfg.animated_sheet.compression_effort, Some(effort));
+            assert!(cfg.validate().is_ok());
+        }
+    }
 
     #[test]
     fn load_missing_creates_template() {

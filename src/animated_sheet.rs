@@ -22,6 +22,9 @@ pub struct AnimatedSheetOptions {
     pub clip_length_secs: u32,
     pub fps: u32,
     pub quality: u32,
+    /// WebP encoding effort (0..=6), independent of quality; zero is lowest effort.
+    #[serde(default = "default_compression_effort")]
+    pub compression_effort: u32,
     pub thumb_font_size: u32,
     pub header_font_size: u32,
     pub show_timestamps: bool,
@@ -30,6 +33,10 @@ pub struct AnimatedSheetOptions {
     pub suffix: String,
     #[serde(default)]
     pub theme: SheetTheme,
+}
+
+fn default_compression_effort() -> u32 {
+    crate::defaults::animated_sheet::COMPRESSION_EFFORT
 }
 
 impl AnimatedSheetOptions {
@@ -42,7 +49,11 @@ impl AnimatedSheetOptions {
             ));
         }
         require_nonzero("clip length", self.clip_length_secs)?;
-        require_nonzero("fps", self.fps)
+        require_nonzero("fps", self.fps)?;
+        if self.compression_effort > 6 {
+            return Err(format!("compression effort {} out of range (0..=6)", self.compression_effort));
+        }
+        Ok(())
     }
 
     pub fn needs(&self) -> Vec<Need> {
@@ -120,6 +131,7 @@ pub(crate) fn build_stitch_args(
     clip_length_secs: u32,
     fps: u32,
     quality: u32,
+    compression_effort: u32,
     output: &Path,
 ) -> Vec<String> {
     let n = clips.len() as u32;
@@ -159,6 +171,7 @@ pub(crate) fn build_stitch_args(
         "-c:v".into(), "libwebp".into(),
         "-loop".into(), "0".into(),
         "-quality".into(), format!("{}", quality),
+        "-compression_level".into(), compression_effort.to_string(),
         output.to_string_lossy().into_owned(),
     ]);
     args
@@ -235,7 +248,7 @@ pub async fn generate(
     let staged = tmp.path().join("sheet.webp");
     let args = build_stitch_args(
         &clips, &layout, thumb_h, layout.gap, opts.theme, header_params.as_ref(),
-        opts.clip_length_secs, opts.fps, opts.quality, &staged,
+        opts.clip_length_secs, opts.fps, opts.quality, opts.compression_effort, &staged,
     );
     run_cancellable(ctx.ffmpeg, &args, ctx.cancelled.clone()).await?;
     move_into_place(&staged, out, ctx).await
@@ -270,6 +283,44 @@ mod tests {
             },
             audio: None,
             enrichment: None,
+        }
+    }
+
+    #[test]
+    fn compression_effort_validates_and_defaults_for_deserialized_options() {
+        let legacy = serde_json::json!({
+            "cols": 2, "rows": 1, "width": 320, "gap": 8,
+            "clip_length_secs": 1, "fps": 4, "quality": 75,
+            "thumb_font_size": 14, "header_font_size": 18,
+            "show_timestamps": false, "show_header": false
+        });
+        let mut opts: AnimatedSheetOptions = serde_json::from_value(legacy).unwrap();
+        assert_eq!(opts.compression_effort, 4);
+        for effort in 0..=6 {
+            opts.compression_effort = effort;
+            assert!(opts.validate().is_ok());
+        }
+        opts.compression_effort = 7;
+        assert_eq!(opts.validate().unwrap_err(), "compression effort 7 out of range (0..=6)");
+    }
+
+    #[test]
+    fn stitch_args_pass_each_compression_effort_without_other_changes() {
+        let layout = compute_sheet_layout(2, 1, 320, 8);
+        let clips = vec![PathBuf::from("a.mp4"), PathBuf::from("b.mp4")];
+        let mut reference = None;
+        for effort in 0..=6 {
+            let mut args = build_stitch_args(
+                &clips, &layout, 80, 8, SheetTheme::Dark, None, 1, 4, 75, effort,
+                Path::new("sheet.webp"),
+            );
+            let pos = args.iter().position(|arg| arg == "-compression_level").unwrap();
+            assert_eq!(args[pos + 1], effort.to_string());
+            assert_eq!(args.iter().filter(|arg| *arg == "-compression_level").count(), 1);
+            assert_eq!(pos + 2, args.len() - 1, "effort must be an output option");
+            args.drain(pos..pos + 2);
+            if let Some(ref expected) = reference { assert_eq!(&args, expected); }
+            else { reference = Some(args); }
         }
     }
 
@@ -344,7 +395,7 @@ mod tests {
         let layout = compute_sheet_layout(2, 2, 800, 10);
         let clips: Vec<PathBuf> = (0..4).map(|i| PathBuf::from(format!("/tmp/c{}.mp4", i))).collect();
         let args = build_stitch_args(
-            &clips, &layout, 200, 10, SheetTheme::Dark, None, 3, 12, 75,
+            &clips, &layout, 200, 10, SheetTheme::Dark, None, 3, 12, 75, 4,
             Path::new("/out/sheet.webp"),
         );
         // 4 inputs
@@ -373,7 +424,7 @@ mod tests {
             font_ffmpeg: "/f/font.ttf".into(),
         };
         let args = build_stitch_args(
-            &clips, &layout, 200, 10, SheetTheme::Dark, Some(&header), 3, 12, 75,
+            &clips, &layout, 200, 10, SheetTheme::Dark, Some(&header), 3, 12, 75, 4,
             Path::new("/out/sheet.webp"),
         );
         let fc = args.iter().position(|a| a == "-filter_complex").unwrap();
@@ -396,7 +447,7 @@ mod tests {
             font_ffmpeg: "/f.ttf".into(),
         };
         let args = build_stitch_args(
-            &clips, &layout, 200, 10, SheetTheme::Light, Some(&header), 3, 12, 75,
+            &clips, &layout, 200, 10, SheetTheme::Light, Some(&header), 3, 12, 75, 4,
             Path::new("/out/sheet.webp"),
         );
         let fc = args.iter().position(|a| a == "-filter_complex").unwrap();
@@ -411,7 +462,7 @@ mod tests {
         let layout = compute_sheet_layout(3, 2, 900, 10);
         let clips: Vec<PathBuf> = (0..6).map(|i| PathBuf::from(format!("/tmp/c{}.mp4", i))).collect();
         let args = build_stitch_args(
-            &clips, &layout, 150, 10, SheetTheme::Dark, None, 2, 10, 75,
+            &clips, &layout, 150, 10, SheetTheme::Dark, None, 2, 10, 75, 4,
             Path::new("/out/sheet.webp"),
         );
         let fc = args.iter().position(|a| a == "-filter_complex").unwrap();
@@ -424,6 +475,7 @@ mod tests {
         let opts = AnimatedSheetOptions {
             cols, rows, width: 1280, gap: 4,
             clip_length_secs: 1, fps: 8, quality: 75,
+            compression_effort: crate::defaults::animated_sheet::COMPRESSION_EFFORT,
             thumb_font_size: 14, header_font_size: 18,
             show_timestamps: false, show_header: false,
             suffix: String::new(),

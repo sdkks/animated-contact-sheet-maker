@@ -188,6 +188,10 @@ pub struct AnimatedSheetArgs {
     /// Webp encoder quality 0–100 (higher = better).
     #[arg(long, value_parser = clap::value_parser!(u32).range(0..=100))]
     pub quality: Option<u32>,
+    /// WebP compression effort 0–6 (0 = lowest, not auto; independent of quality).
+    /// Default: 4 unless configured.
+    #[arg(long, value_name = "EFFORT", value_parser = clap::value_parser!(u32).range(0..=6))]
+    pub compression_effort: Option<u32>,
     /// Timestamp-overlay font size (points).
     #[arg(long = "thumb-font", value_parser = clap::value_parser!(u32).range(8..=72))]
     pub thumb_font: Option<u32>,
