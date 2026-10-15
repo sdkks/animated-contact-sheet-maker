@@ -5,10 +5,26 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  ci:
+    # Relative reuse checks the tag commit, never an unrelated main-branch run.
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  validate-tag:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check tag against manifest and lockfile
+        run: python3 scripts/verify-release.py tag "$GITHUB_REF_NAME"
+
   build:
+    needs: [ci, validate-tag]
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -93,51 +109,41 @@ jobs:
             test -n "$(find /tmp/smoke -type f -size +0c)"
           '
 
-      - name: Checksum CLI artifact
+      - name: Package CLI and checksum ZIP
         shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            sha=$(certutil -hashfile "$CLI_ARTIFACT" SHA256 | sed -n '2p' | tr -d ' \r' | tr '[:upper:]' '[:lower:]')
-            printf '%s  %s\n' "$sha" "$CLI_ARTIFACT" > "${CLI_ARTIFACT}.sha256"
-          else
-            shasum -a 256 "$CLI_ARTIFACT" > "${CLI_ARTIFACT}.sha256"
-          fi
-          cat "${CLI_ARTIFACT}.sha256"
+        run: bash scripts/package-release.sh "$CLI_ARTIFACT" "${{ matrix.cli-name }}" release-assets
 
-      - name: Upload CLI to release draft
+      - name: Upload ZIP to release draft
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            ${{ env.CLI_ARTIFACT }}
-            ${{ env.CLI_ARTIFACT }}.sha256
+            release-assets/acsm-${{ matrix.cli-name }}.zip
+            release-assets/acsm-${{ matrix.cli-name }}.zip.sha256
           tag_name: ${{ github.ref_name }}
           draft: true
           prerelease: false
           fail_on_unmatched_files: true
 
   finalize:
-    needs: build
+    needs: [ci, validate-tag, build]
     runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
-      - name: Download per-artifact checksums from draft release
+      - uses: actions/checkout@v7
+
+      - name: Download and verify draft ZIPs and checksums
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p checksums
-          gh release download "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern 'acsm-*.sha256' \
-            --dir checksums
-          sort checksums/*.sha256 > SHA256SUMS
-          echo "--- SHA256SUMS ---"
-          cat SHA256SUMS
+          test "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir release-assets
+          python3 scripts/verify-release.py archives release-assets
 
       - name: Finalize notes and upload SHA256SUMS to draft release
         uses: softprops/action-gh-release@v3
         with:
-          files: SHA256SUMS
+          files: release-assets/SHA256SUMS
           tag_name: ${{ github.ref_name }}
           name: "ACSM ${{ github.ref_name }}"
           body: |
@@ -166,7 +172,7 @@ jobs:
 
             ### Downloads and verification
 
-            Download one of the four Windows or Linux binaries: `acsm-windows-x86_64.exe`, `acsm-windows-aarch64.exe`, `acsm-linux-x86_64` (GNU), or `acsm-linux-x86_64-musl` (static musl, for Alpine and other musl systems). Media tools are still separate runtime prerequisites (`apk add ffmpeg mediainfo` on Alpine). Verify the binary against `SHA256SUMS` before replacing your installed binary. Configuration uses `~/.acsm.toml` (override with `ACSM_CONFIG`).
+            Download one of the four ZIP archives: `acsm-windows-x86_64.zip`, `acsm-windows-aarch64.zip`, `acsm-linux-x86_64.zip` (GNU), or `acsm-linux-x86_64-musl.zip` (static musl, for Alpine and other musl systems). Each contains `acsm` or `acsm.exe`, `LICENSE`, and `FONT-LICENSE`. Verify the ZIP against its `.zip.sha256` companion or `SHA256SUMS` before extracting and installing the binary. Media tools remain separate runtime prerequisites (`apk add ffmpeg mediainfo` on Alpine). Configuration uses `~/.acsm.toml` (override with `ACSM_CONFIG`).
 
             macOS is source-only: install Rust stable and a platform C linker, then run `cargo install --path . --locked` from the repository root, or `cargo install --git https://github.com/sdkks/animated-contact-sheet-maker.git --locked acsm`. No macOS binary is built by CI or attached to releases.
 
@@ -174,7 +180,19 @@ jobs:
 
             Windows CLI builds are unsigned; SmartScreen may warn on first run.
 
-            ACSM is MIT-licensed. The embedded DejaVu Sans font retains its Bitstream/Arev notices; see `assets/fonts/LICENSE` in the source.
+            ACSM is MIT-licensed (`LICENSE`). The embedded DejaVu Sans font retains its Bitstream/Arev notices in `FONT-LICENSE` (also `assets/fonts/LICENSE` in the source).
           draft: true
           prerelease: false
           fail_on_unmatched_files: true
+
+      - name: Verify uploaded aggregate checksum
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir uploaded
+          cmp release-assets/SHA256SUMS uploaded/SHA256SUMS
+
+      - name: Publish verified release as latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest

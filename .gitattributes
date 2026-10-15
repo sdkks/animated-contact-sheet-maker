@@ -1,0 +1,5 @@
+# Release ZIPs preserve these notices byte-for-byte on every runner.
+LICENSE text eol=lf
+assets/fonts/LICENSE text eol=lf
+# Git Bash must receive Unix line endings on Windows too.
+scripts/package-release.sh text eol=lf

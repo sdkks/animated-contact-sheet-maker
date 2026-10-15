@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   workflow_dispatch:
   push:
     branches: [main]
@@ -28,6 +29,9 @@ jobs:
             target
           key: cargo-ci-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-ci-
+
+      - name: Release packaging smoke and guard tests
+        run: python3 -B scripts/test-release.py
 
       - name: Install media tools
         run: |
@@ -135,3 +139,6 @@ jobs:
 
       - name: Build acsm
         run: cargo build --locked
+
+      - name: Release packaging smoke and guard tests
+        run: python -B scripts/test-release.py

@@ -26,6 +26,7 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo build --locked --release
 actionlint .github/workflows/ci.yml .github/workflows/release.yml
+python3 -B scripts/test-release.py
 ```
 
 On macOS prefix the test command with `PATH="/opt/homebrew/opt/ffmpeg-full/bin:$PATH"`. Tests require ffmpeg, ffprobe and mediainfo, including drawtext and WebP support. There is one package; all integration tests run without feature flags. Do not skip failing tests or silence warnings.
@@ -40,9 +41,9 @@ Insert the approved version/date entry below `[Unreleased]` and update compare l
 
 ## 5. Bump and verify
 
-Run `node scripts/bump-version.mjs <version>` **without `--tag`**. This optional maintainer utility changes exactly root `Cargo.toml` and `Cargo.lock`, using `cargo update --workspace` to avoid dependency upgrades. Node is not required by application build/install/test.
+Edit only the root `[package].version` in `Cargo.toml`, then run `cargo update --workspace` to refresh `Cargo.lock` without intentionally upgrading dependencies. Review the diff and stop if unrelated dependency changes appear. No Node helper is required.
 
-Review the two version changes and confirm the `acsm` lockfile package entry matches the manifest. Re-run the preflight checks after these final input changes. Stage exactly:
+Confirm the `acsm` lockfile package entry matches the manifest. Run `python3 scripts/verify-release.py tag v<version>` to check tag/version agreement without creating a tag. Re-run the preflight checks after these final input changes. Stage exactly:
 
 ```sh
 git add Cargo.toml Cargo.lock CHANGELOG.md .github/workflows/release.yml
@@ -52,18 +53,18 @@ Inspect `git status --short` and the staged diff; stop if relevant modifications
 
 ## 6. Confirm push
 
-Show commits about to ship, tag and Actions URL. Obtain explicit confirmation before pushing `main` and then `v<version>`. Skip both pushes in dry-run mode. If either fails, stop without force/retry tricks.
+Show commits about to ship, tag and Actions URL. Obtain explicit confirmation before pushing `main` and then `v<version>`. Wait for main CI to pass, including native Windows/Linux packaging smoke tests, before pushing the tag. Tag push authorizes automatic publication after same-tag CI, all builds and asset verification succeed; there is no later manual Publish gate. Skip both pushes in dry-run mode. If either fails, stop without force/retry tricks.
 
 ## 7. Verify and hand off
 
-After an authorized push, check the release workflow run. It builds only these CLI artifacts:
+After an authorized tag push, check the release workflow run. It first calls shared CI at the same commit and checks manifest/lockfile/tag agreement, then builds only these CLI ZIP archives:
 
-- `acsm-windows-x86_64.exe` (unsigned)
-- `acsm-windows-aarch64.exe` (unsigned)
-- `acsm-linux-x86_64` (GNU)
-- `acsm-linux-x86_64-musl` (static musl; native x86_64 build with Alpine smoke)
+- `acsm-windows-x86_64.zip` (unsigned `acsm.exe`)
+- `acsm-windows-aarch64.zip` (unsigned `acsm.exe`)
+- `acsm-linux-x86_64.zip` (GNU `acsm`)
+- `acsm-linux-x86_64-musl.zip` (static musl `acsm`; native x86_64 build with Alpine smoke)
 
-Verify all four artifacts, their `.sha256` companions and sorted `SHA256SUMS` are present. The finalizer supplies the release title/body. Provide Actions and Releases URLs. The release remains a **draft** until the human reviews notes and assets and chooses Publish. No updater metadata or desktop installers are expected.
+Each archive also contains `LICENSE` and `FONT-LICENSE`, copied verbatim from the source notices. Verify all four ZIPs, their `.zip.sha256` companions and sorted `SHA256SUMS` are present. Checksums cover the ZIP bytes, not the extracted executable. The finalizer downloads the draft assets, checks exact inventory, recomputes hashes and verifies ZIP integrity/entries and license contents before uploading `SHA256SUMS`. It verifies the uploaded aggregate, then publishes and marks latest as the last step. Any failed/skipped/cancelled prerequisite prevents publication; partial uploads remain drafts. The finalizer supplies the release title/body. Provide Actions and Releases URLs and confirm the release is published/latest. Do not manually publish a failed draft or modify an older release. No updater metadata or desktop installers are expected. The separate Actions artifact download remains its existing ZIP wrapper around a binary and checksum, not a nested release ZIP.
 
 macOS has no CI/release binary or signing/notarization job. Preserve local macOS support and document source installation: `cargo install --path . --locked` from the repository root, or `cargo install --git https://github.com/sdkks/animated-contact-sheet-maker.git --locked acsm`. Rust stable and a platform C linker are required; keep `brew install ffmpeg-full mediainfo` for runtime media tools.
 

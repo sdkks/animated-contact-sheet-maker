@@ -45,7 +45,7 @@ acsm --help
 
 Cargo installs the binary into its configured bin directory (normally `~/.cargo/bin`). Use `--root /your/install/path` for an isolated installation and add that directory's `bin` to PATH. No crates.io publication is assumed by these instructions.
 
-Release workflows produce four standalone CLI binaries: `acsm-windows-x86_64.exe`, `acsm-windows-aarch64.exe`, `acsm-linux-x86_64` (GNU), and `acsm-linux-x86_64-musl`, plus individual SHA-256 hashes and `SHA256SUMS`. Windows binaries remain unsigned. Release creation is tag-triggered and produces a draft for human review, not GUI installers.
+Release workflows produce four ZIP archives: `acsm-windows-x86_64.zip`, `acsm-windows-aarch64.zip`, `acsm-linux-x86_64.zip` (GNU), and `acsm-linux-x86_64-musl.zip`. Each contains `acsm.exe` or `acsm`, the project's `LICENSE`, and the font notices in `FONT-LICENSE`. Verify the ZIP bytes against the matching `.zip.sha256` file (for example, `sha256sum -c acsm-linux-x86_64-musl.zip.sha256`) or `SHA256SUMS` before extracting and installing. Windows binaries remain unsigned. Version tags run shared CI at the same commit and all four release builds; assets are staged as a draft, verified, then automatically published as the latest release. Failures leave the release unpublished; no manual Publish click is required after success. These are CLI downloads, not GUI installers. Previously published releases retain their original asset format.
 
 ### macOS: install from source
 
@@ -138,7 +138,7 @@ actionlint .github/workflows/ci.yml .github/workflows/release.yml
 
 Tests include real rendering and require the media tools above. On macOS run tests with `PATH="/opt/homebrew/opt/ffmpeg-full/bin:$PATH" cargo test --locked`. There are no integration-test feature gates. CI runs Rust checks on Linux and Windows, with media integration tests on Linux.
 
-`scripts/bump-version.mjs` is an optional maintainer-only Node utility for updating `Cargo.toml` and `Cargo.lock`; Node is not needed to build, install or test the application.
+Maintainer releases follow `.agents/commands/release.md`: update the root package version in `Cargo.toml`, refresh `Cargo.lock` with `cargo update --workspace`, and verify the diff does not upgrade dependencies. Release packaging uses native ZIP tooling and Python 3.11+ standard-library validation in CI; these are not application runtime dependencies.
 
 ## License and attribution
 
