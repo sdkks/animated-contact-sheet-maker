@@ -149,12 +149,9 @@ jobs:
           body: |
             ## What's New
 
-            ### Added
+            ### Changed
 
-            - `animated-sheet --compression-effort <0–6>` to control WebP encoder effort independently of quality. The default remains 4.
-            - `[animated_sheet].compression_effort` configuration support, with explicit CLI values overriding valid config.
-
-            Lower effort can encode faster, but may produce larger files and different decoded pixels.
+            - Animated-sheet stitching now requests one video decoder thread per cached clip to reduce memory overhead. Quality, compression effort, and animation settings are unchanged.
 
             ### Requirements
 
