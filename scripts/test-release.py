@@ -2,16 +2,78 @@
 """Exercise the actual packager and release guards without contacting GitHub."""
 import hashlib
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import runpy
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
 GUARDS = runpy.run_path(str(ROOT / "scripts/verify-release.py"))
+
+
+def packaging_bash():
+    if os.name == "nt":
+        # CI supplies the running Git Bash via cygpath, not Windows' WSL shim.
+        bash = os.environ.get("ACSM_TEST_BASH", "")
+        if not PureWindowsPath(bash).is_absolute() or not os.path.isfile(bash):
+            raise RuntimeError("ACSM_TEST_BASH must name the absolute Git for Windows Bash executable")
+        return bash
+    bash = shutil.which("bash")
+    if not bash:
+        raise RuntimeError("Packaging tests require Bash on PATH")
+    return bash
+
+
+class BashSelectionTests(unittest.TestCase):
+    def test_windows_uses_explicit_path_with_spaces_without_path_search(self):
+        bash = r"C:\Program Files\Git\bin\bash.exe"
+        with mock.patch.object(os, "name", "nt"), \
+                mock.patch.dict(os.environ, {"ACSM_TEST_BASH": bash}), \
+                mock.patch.object(os.path, "isfile", return_value=True) as isfile, \
+                mock.patch.object(shutil, "which") as which:
+            self.assertEqual(packaging_bash(), bash)
+            isfile.assert_called_once_with(bash)
+            which.assert_not_called()
+
+    def test_windows_rejects_missing_relative_or_nonexistent_launcher(self):
+        for bash, exists in (("", True), ("bash", True), (r"Git\bin\bash.exe", True),
+                             (r"C:bin\bash.exe", True), (r"C:\missing\bash.exe", False)):
+            with self.subTest(bash=bash), \
+                    mock.patch.object(os, "name", "nt"), \
+                    mock.patch.dict(os.environ, {"ACSM_TEST_BASH": bash}), \
+                    mock.patch.object(os.path, "isfile", return_value=exists), \
+                    mock.patch.object(shutil, "which") as which:
+                with self.assertRaisesRegex(RuntimeError, "absolute Git for Windows"):
+                    packaging_bash()
+                which.assert_not_called()
+
+    def test_unix_resolves_bash_from_path(self):
+        with mock.patch.object(os, "name", "posix"), \
+                mock.patch.object(shutil, "which", return_value="/bin/bash") as which:
+            self.assertEqual(packaging_bash(), "/bin/bash")
+            which.assert_called_once_with("bash")
+
+    def test_unix_missing_bash_fails_before_subprocess(self):
+        with mock.patch.object(os, "name", "posix"), \
+                mock.patch.object(shutil, "which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "Bash on PATH"):
+                packaging_bash()
+
+    def test_negative_smoke_does_not_accept_wsl_launch_failure(self):
+        case = ReleaseTests("test_packager_rejects_missing_empty_or_existing_output")
+        result = unittest.TestResult()
+        failure = subprocess.CompletedProcess([], 1, "", "WSL has no installed distributions")
+        with mock.patch.object(subprocess, "run", return_value=failure):
+            case.run(result)
+        self.assertEqual(len(result.errors), 0, result.errors)
+        self.assertEqual(len(result.failures), 3, result.failures)
+        for _, traceback in result.failures:
+            self.assertIn("not found in 'WSL has no installed distributions'", traceback)
 
 
 class ReleaseTests(unittest.TestCase):
@@ -77,22 +139,25 @@ class ReleaseTests(unittest.TestCase):
                 continue
             archive = self.assets / f"acsm-{platform}.zip"
             archive.unlink()
-            subprocess.run(["bash", "scripts/package-release.sh", binary.as_posix(), platform,
+            subprocess.run([packaging_bash(), "scripts/package-release.sh", binary.as_posix(), platform,
                             self.assets.as_posix()], cwd=ROOT, check=True)
         self.verify()
 
     def test_packager_rejects_missing_empty_or_existing_output(self):
         platform = "windows-x86_64" if os.name == "nt" else "linux-x86_64"
         binary = self.root / "fixture binary"
-        command = ["bash", "scripts/package-release.sh", binary.as_posix(), platform,
+        command = [packaging_bash(), "scripts/package-release.sh", binary.as_posix(), platform,
                    self.assets.as_posix()]
-        # Missing input, empty input, then an already existing output archive.
-        for payload in (None, b"", b"nonempty"):
+        # Require a packager diagnostic, not an unrelated shell/WSL launch failure.
+        for payload, diagnostic in ((None, "Release input is missing or empty:"),
+                                    (b"", "Release input is missing or empty:"),
+                                    (b"nonempty", "Release archive already exists:")):
             if payload is not None:
                 binary.write_bytes(payload)
             with self.subTest(payload=payload):
                 result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(diagnostic, result.stderr)
         self.verify()
 
     def test_missing_archive_or_checksum(self):

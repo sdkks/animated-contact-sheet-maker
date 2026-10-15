@@ -141,4 +141,12 @@ jobs:
         run: cargo build --locked
 
       - name: Release packaging smoke and guard tests
-        run: python -B scripts/test-release.py
+        shell: bash
+        run: |
+          # Pass Git Bash explicitly: native Python's bare bash lookup can select WSL.
+          # Non-login shells need the MSYS utilities on PATH for the child packager.
+          export PATH="/usr/bin:$PATH"
+          # MSYS accepts an omitted .exe suffix; native Python needs the real filename.
+          ACSM_TEST_BASH=$(cygpath -w "${BASH%.[eE][xX][eE]}.exe")
+          export ACSM_TEST_BASH
+          python -B scripts/test-release.py

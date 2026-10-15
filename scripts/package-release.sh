@@ -9,11 +9,17 @@ case "$platform" in
   linux-x86_64|linux-x86_64-musl) executable=acsm ;;
   *) echo "Unknown release platform: $platform" >&2; exit 1 ;;
 esac
-test -s "$binary"
+if [ ! -s "$binary" ]; then
+  echo "Release input is missing or empty: $binary" >&2
+  exit 1
+fi
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 archive="$out/acsm-$platform.zip"
-test ! -e "$archive"
+if [ -e "$archive" ]; then
+  echo "Release archive already exists: $archive" >&2
+  exit 1
+fi
 stage=$(mktemp -d)
 # Only the unique directory created above is removed.
 trap 'rm -rf "$stage"' EXIT
