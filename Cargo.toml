@@ -9,7 +9,7 @@ repository = "https://github.com/sdkks/animated-contact-sheet-maker"
 include = [
     "/Cargo.toml", "/Cargo.lock", "/.cargo/config.toml",
     "/src/**", "/tests/**", "/assets/fonts/**",
-    "/LICENSE", "/README.md", "/CHANGELOG.md", "/CLAUDE.md", "/AGENT.md",
+    "/LICENSE", "/README.md", "/CHANGELOG.md", "/AGENTS.md",
 ]
 
 [lib]

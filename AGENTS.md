@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 ## Commands
 
@@ -7,11 +7,11 @@ This is one root Cargo package, `acsm`, with the implementation library `acsm`. 
 - Development: `cargo run --locked -- <subcommand> [args]`
 - Build: `cargo build --locked --release`
 - Install: `cargo install --path . --locked`
-- Tests: `cargo test --locked` (unit and integration tests, no feature gates)
+- Tests: `cargo test --locked` (unit and integration tests run unconditionally)
 - Required Rust lint gates: `cargo clippy --locked -- -D warnings` and `cargo clippy --locked --all-targets -- -D warnings`. Fix warnings; do not silence them.
 - Workflow validation: `actionlint .github/workflows/ci.yml .github/workflows/release.yml`
 
-Integration tests need ffmpeg with drawtext, libwebp and the other pipeline encoders, plus ffprobe and mediainfo. On macOS install `brew install ffmpeg-full mediainfo` and run tests with `PATH="/opt/homebrew/opt/ffmpeg-full/bin:$PATH" cargo test --locked`. The default Homebrew ffmpeg lacks required features. No Node, frontend or GUI framework is needed for build/install/test.
+Integration tests need ffmpeg with drawtext, libwebp and the other pipeline encoders, plus ffprobe and mediainfo. On macOS install `brew install ffmpeg-full mediainfo` and run tests with `PATH="/opt/homebrew/opt/ffmpeg-full/bin:$PATH" cargo test --locked`. The default Homebrew ffmpeg lacks required features. Rust/Cargo is the build and test toolchain.
 
 ## Architecture and invariants
 
@@ -23,7 +23,7 @@ Integration tests need ffmpeg with drawtext, libwebp and the other pipeline enco
 
 **Probe.** Private `probe.rs` runs ffprobe and MediaInfo concurrently, preserving stream selection, duration hints and conditional packet counting. Malformed MediaInfo output degrades gracefully. `VideoInfo` serialization and `duration_source` are CLI contracts. Historical `ffmpeg_test_hook_locate`, `ffmpeg_test_hook_probe`, and `video_info_test_hook_parse` names are also production CLI entry points; do not rename incidentally.
 
-**Subprocesses and cancellation.** All pipelines begin with `ffmpeg::base_args()` (`-hide_banner -loglevel error -y`). CLI `signals.rs` owns the shared `Arc<AtomicBool>` for Ctrl-C. Long-running ffmpeg calls must use `run_cancellable` / `run_batch_cancellable`, not `run_capture`. Preserve kill-on-drop, concurrent stderr draining, cancellation polling and bounded batch parallelism. Tokio's explicit `time` feature is required by polling. `PipelineContext` and `ProgressReporter` pass execution settings and callback progress without a GUI event bus.
+**Subprocesses and cancellation.** All pipelines begin with `ffmpeg::base_args()` (`-hide_banner -loglevel error -y`). CLI `signals.rs` owns the shared `Arc<AtomicBool>` for Ctrl-C. Long-running ffmpeg calls must use `run_cancellable` / `run_batch_cancellable`, not `run_capture`. Preserve kill-on-drop, concurrent stderr draining, cancellation polling and bounded batch parallelism. Tokio's explicit `time` feature is required by polling. `PipelineContext` and `ProgressReporter` pass execution settings and report progress through callbacks.
 
 **Output publication.** Every pipeline renders into a TempDir and finishes with `jobs::move_into_place`. Rename/cross-filesystem copy is only into an owned destination-local private stage; final publication uses atomic overwrite or no-clobber persistence, never a direct copy. Blocking preparation never publishes; cancellation is checked immediately before commit. Preserve partial screenshot publication reports and the all-extractions-successful barrier. Rendering selects exact names via filename builders in `output_path.rs` with a false `exists_fn`: default skips, explicit `--overwrite-existing` replaces, screenshots individually without resampling. Do not duplicate naming logic. Empty configurable suffixes fall back to the existing defaults. JPEG quality mapping to ffmpeg's 2–31 scale lives in `output_path::jpeg_qv`.
 
@@ -37,14 +37,14 @@ Integration tests need ffmpeg with drawtext, libwebp and the other pipeline enco
 
 ## Packaging and releases
 
-Keep root `.cargo/config.toml`'s static MSVC runtime setting. Cargo package contents must include the font, font notices, MIT license and test fixtures. Do not add GUI dependencies or reintroduce obsolete `cli` / `test-api` feature gates.
+Keep root `.cargo/config.toml`'s static MSVC runtime setting. Cargo package contents must include the font, font notices, MIT license and test fixtures. Keep dependencies scoped to the CLI application and tests unconditional.
 
-CI keeps Linux media tests and Windows lint/link checks, plus a native Ubuntu x86_64 musl build uploaded as an Actions artifact with its checksum. Keep this Actions ZIP wrapper unchanged. Releases produce four ZIP archives: Windows x86_64/aarch64 and Linux x86_64 GNU/musl, each containing canonical `acsm.exe`/`acsm`, `LICENSE` and `FONT-LICENSE`, with per-ZIP hashes and aggregate `SHA256SUMS`. macOS is source-only: no macOS CI/release builds or Apple signing/notarization steps. Preserve macOS runtime support and local build/test commands; users install from the repository root with `cargo install --path . --locked` or via `cargo install --git https://github.com/sdkks/animated-contact-sheet-maker.git --locked acsm`. Musl jobs install musl-tools and the Rust target, check static linkage, and smoke-test in Alpine; do not replace the existing GNU artifact. Tag-triggered releases must pass same-ref reusable CI and all four builds before finalization. Stage assets as drafts, verify inventory/ZIP contents/checksums, upload and verify `SHA256SUMS`, then publish/latest as the last step. Title/body remain owned by the softprops finalizer. CI exercises the shared native ZIP helper and Python 3.11+ standard-library guards on Linux/Windows. No GUI bundles or updater assets are produced.
+CI keeps Linux media tests and Windows lint/link checks, plus a native Ubuntu x86_64 musl build uploaded as an Actions artifact with its checksum. Keep this Actions ZIP wrapper unchanged. Releases produce four ZIP archives: Windows x86_64/aarch64 and Linux x86_64 GNU/musl, each containing canonical `acsm.exe`/`acsm`, `LICENSE` and `FONT-LICENSE`, with per-ZIP hashes and aggregate `SHA256SUMS`. macOS is source-only: no macOS CI/release builds or Apple signing/notarization steps. Preserve macOS runtime support and local build/test commands; users install from the repository root with `cargo install --path . --locked` or via `cargo install --git https://github.com/sdkks/animated-contact-sheet-maker.git --locked acsm`. Musl jobs install musl-tools and the Rust target, check static linkage, and smoke-test in Alpine; do not replace the existing GNU artifact. Tag-triggered releases must pass same-ref reusable CI and all four builds before finalization. Stage assets as drafts, verify inventory/ZIP contents/checksums, upload and verify `SHA256SUMS`, then publish/latest as the last step. Title/body remain owned by the softprops finalizer. CI exercises the shared native ZIP helper and Python 3.11+ standard-library guards on Linux/Windows. Release assets are limited to the four CLI ZIPs and their checksums.
 
 Follow `.agents/commands/release.md` for explicit release authorization. Update the root `Cargo.toml` version directly and refresh `Cargo.lock` with `cargo update --workspace`; verify only the intended package version changes. Version changes, tags, pushes and release execution must not happen as an incidental check. Previously published releases are not modified by a new release.
 
 ## Separate and local content
 
-Project documentation lives at `https://github.com/sdkks/animated-contact-sheet-maker`; do not recreate a separate showcase site or installer scripts here. `docs/` is ignored local-only maintainer material, absent from fresh clones. Do not recreate missing local design docs or remove ignored caches left by previous package layouts. Preserve `AGENT.md` as a symlink to this file.
+Project documentation lives at `https://github.com/sdkks/animated-contact-sheet-maker`; do not recreate a separate showcase site or installer scripts here. `docs/` is ignored local-only maintainer material, absent from fresh clones. Do not recreate missing local design docs or remove ignored caches left by previous package layouts. Keep `AGENTS.md` as the canonical guidance file; preserve any existing `AGENT.md` compatibility symlink to it.
 
 Test media reference: https://kodi.wiki/view/Samples

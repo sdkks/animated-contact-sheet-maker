@@ -37,11 +37,11 @@ Read commits and relevant diffs since the previous tag. Draft user-facing Added/
 
 ## 4. Write changelog and workflow notes
 
-Insert the approved version/date entry below `[Unreleased]` and update compare links. In `.github/workflows/release.yml`, edit only the finalizer's `body: |` notes block; title and notes belong to the existing `softprops/action-gh-release` step, not a matrix job. Keep media-tool requirements, checksum guidance, unsigned Windows notes and macOS source-only installation instructions. Do not add GUI download or auto-update instructions.
+Insert the approved version/date entry below `[Unreleased]` and update compare links. In `.github/workflows/release.yml`, edit only the finalizer's `body: |` notes block; title and notes belong to the existing `softprops/action-gh-release` step, not a matrix job. Keep media-tool requirements, checksum guidance, unsigned Windows notes and macOS source-only installation instructions. Keep release instructions scoped to CLI ZIP downloads and manual installation.
 
 ## 5. Bump and verify
 
-Edit only the root `[package].version` in `Cargo.toml`, then run `cargo update --workspace` to refresh `Cargo.lock` without intentionally upgrading dependencies. Review the diff and stop if unrelated dependency changes appear. No Node helper is required.
+Edit only the root `[package].version` in `Cargo.toml`, then run `cargo update --workspace` to refresh `Cargo.lock` without intentionally upgrading dependencies. Review the diff and stop if unrelated dependency changes appear.
 
 Confirm the `acsm` lockfile package entry matches the manifest. Run `python3 scripts/verify-release.py tag v<version>` to check tag/version agreement without creating a tag. Re-run the preflight checks after these final input changes. Stage exactly:
 
@@ -64,7 +64,7 @@ After an authorized tag push, check the release workflow run. It first calls sha
 - `acsm-linux-x86_64.zip` (GNU `acsm`)
 - `acsm-linux-x86_64-musl.zip` (static musl `acsm`; native x86_64 build with Alpine smoke)
 
-Each archive also contains `LICENSE` and `FONT-LICENSE`, copied verbatim from the source notices. Verify all four ZIPs, their `.zip.sha256` companions and sorted `SHA256SUMS` are present. Checksums cover the ZIP bytes, not the extracted executable. The finalizer downloads the draft assets, checks exact inventory, recomputes hashes and verifies ZIP integrity/entries and license contents before uploading `SHA256SUMS`. It verifies the uploaded aggregate, then publishes and marks latest as the last step. Any failed/skipped/cancelled prerequisite prevents publication; partial uploads remain drafts. The finalizer supplies the release title/body. Provide Actions and Releases URLs and confirm the release is published/latest. Do not manually publish a failed draft or modify an older release. No updater metadata or desktop installers are expected. The separate Actions artifact download remains its existing ZIP wrapper around a binary and checksum, not a nested release ZIP.
+Each archive also contains `LICENSE` and `FONT-LICENSE`, copied verbatim from the source notices. Verify all four ZIPs, their `.zip.sha256` companions and sorted `SHA256SUMS` are present. Checksums cover the ZIP bytes, not the extracted executable. The finalizer downloads the draft assets, checks exact inventory, recomputes hashes and verifies ZIP integrity/entries and license contents before uploading `SHA256SUMS`. It verifies the uploaded aggregate, then publishes and marks latest as the last step. Any failed/skipped/cancelled prerequisite prevents publication; partial uploads remain drafts. The finalizer supplies the release title/body. Provide Actions and Releases URLs and confirm the release is published/latest. Do not manually publish a failed draft or modify an older release. Release assets are limited to these CLI ZIPs and checksums. The separate Actions artifact download remains its existing ZIP wrapper around a binary and checksum, not a nested release ZIP.
 
 macOS has no CI/release binary or signing/notarization job. Preserve local macOS support and document source installation: `cargo install --path . --locked` from the repository root, or `cargo install --git https://github.com/sdkks/animated-contact-sheet-maker.git --locked acsm`. Rust stable and a platform C linker are required; keep `brew install ffmpeg-full mediainfo` for runtime media tools.
 

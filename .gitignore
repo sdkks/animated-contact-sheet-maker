@@ -1,11 +1,4 @@
 **/target/
-node_modules/
-dist/
 .DS_Store
 *.log
-.vite/
-.claude/*
-!.claude/commands/
-src-tauri/gen/
-icon-source.png
 docs/

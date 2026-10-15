@@ -1,6 +1,6 @@
 # acsm
 
-ACSM generates video contact sheets, screenshots, animated preview reels and animated contact sheets using local `ffmpeg` processes. This checkout is **CLI-only**: no desktop frontend, Tauri, updater, Node build step, GTK or WebKit is required.
+ACSM generates video contact sheets, screenshots, animated preview reels and animated contact sheets using local `ffmpeg` processes. This checkout is a **CLI-only** Rust application built with Cargo.
 
 Repository: https://github.com/sdkks/animated-contact-sheet-maker. Version 0.1.0 starts this CLI-only project's release line; earlier implementation history remains in Git. Original copyright and permission notices are preserved in [LICENSE](LICENSE).
 
@@ -14,7 +14,7 @@ Repository: https://github.com/sdkks/animated-contact-sheet-maker. Version 0.1.0
 | `animated-sheet` | Grid of looping clips | WebP |
 | `probe` | Structured video metadata, optionally including MediaInfo | JSON |
 
-HDR tonemapping includes HDR10, HLG and Dolby Vision. MediaInfo enriches headers with codec names, HDR format, bit depth, channel layout and language. Inputs may be files or directories; folder scanning recognizes 43 video extensions. Ctrl-C cancels running rendering work. Media stays on your machine; the CLI has no updater or telemetry.
+HDR tonemapping includes HDR10, HLG and Dolby Vision. MediaInfo enriches headers with codec names, HDR format, bit depth, channel layout and language. Inputs may be files or directories; folder scanning recognizes 43 video extensions. Ctrl-C cancels running rendering work. Media stays on your machine; the CLI collects no telemetry. Updates are installed manually through Cargo or the release ZIPs.
 
 ## Prerequisites
 
@@ -45,7 +45,7 @@ acsm --help
 
 Cargo installs the binary into its configured bin directory (normally `~/.cargo/bin`). Use `--root /your/install/path` for an isolated installation and add that directory's `bin` to PATH. No crates.io publication is assumed by these instructions.
 
-Release workflows produce four ZIP archives: `acsm-windows-x86_64.zip`, `acsm-windows-aarch64.zip`, `acsm-linux-x86_64.zip` (GNU), and `acsm-linux-x86_64-musl.zip`. Each contains `acsm.exe` or `acsm`, the project's `LICENSE`, and the font notices in `FONT-LICENSE`. Verify the ZIP bytes against the matching `.zip.sha256` file (for example, `sha256sum -c acsm-linux-x86_64-musl.zip.sha256`) or `SHA256SUMS` before extracting and installing. Windows binaries remain unsigned. Version tags run shared CI at the same commit and all four release builds; assets are staged as a draft, verified, then automatically published as the latest release. Failures leave the release unpublished; no manual Publish click is required after success. These are CLI downloads, not GUI installers. Previously published releases retain their original asset format.
+Release workflows produce four ZIP archives: `acsm-windows-x86_64.zip`, `acsm-windows-aarch64.zip`, `acsm-linux-x86_64.zip` (GNU), and `acsm-linux-x86_64-musl.zip`. Each contains `acsm.exe` or `acsm`, the project's `LICENSE`, and the font notices in `FONT-LICENSE`. Verify the ZIP bytes against the matching `.zip.sha256` file (for example, `sha256sum -c acsm-linux-x86_64-musl.zip.sha256`) or `SHA256SUMS` before extracting and installing. Windows binaries remain unsigned. Version tags run shared CI at the same commit and all four release builds; assets are staged as a draft, verified, then automatically published as the latest release. Failures leave the release unpublished; no manual Publish click is required after success. These are CLI binary downloads. Previously published releases retain their original asset format.
 
 ### macOS: install from source
 
@@ -71,7 +71,7 @@ chmod +x acsm-linux-x86_64-musl
 apk add ffmpeg mediainfo
 ```
 
-The musl binary does not require glibc or GUI libraries. Media-tool packages have their own dependencies. The existing GNU Linux download remains available; use the musl build for Alpine. No GitHub build or release is implied merely by checking out this workflow.
+The musl binary is statically linked. Media-tool packages have their own dependencies. The existing GNU Linux download remains available; use the musl build for Alpine. No GitHub build or release is implied merely by checking out this workflow.
 
 ## Usage
 
@@ -155,7 +155,7 @@ cargo test --locked
 actionlint .github/workflows/ci.yml .github/workflows/release.yml
 ```
 
-Tests include real rendering and require the media tools above. On macOS run tests with `PATH="/opt/homebrew/opt/ffmpeg-full/bin:$PATH" cargo test --locked`. There are no integration-test feature gates. CI runs Rust checks on Linux and Windows, with media integration tests on Linux.
+Tests include real rendering and require the media tools above. On macOS run tests with `PATH="/opt/homebrew/opt/ffmpeg-full/bin:$PATH" cargo test --locked`. Unit and integration tests run unconditionally. CI runs Rust checks on Linux and Windows, with media integration tests on Linux.
 
 Maintainer releases follow `.agents/commands/release.md`: update the root package version in `Cargo.toml`, refresh `Cargo.lock` with `cargo update --workspace`, and verify the diff does not upgrade dependencies. Release packaging uses native ZIP tooling and Python 3.11+ standard-library validation in CI; these are not application runtime dependencies.
 

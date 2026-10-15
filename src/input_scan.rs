@@ -1,6 +1,5 @@
 // src/input_scan.rs
-// Directory walker producing the video-file list consumed by both the
-// Tauri `scan_folder` command and the CLI's positional-input expander.
+// Directory walker producing the video-file list for CLI input expansion.
 // Accepts a file or directory — directories are walked up to
 // MAX_SCAN_DEPTH (16). Symlinks are followed; each real directory is visited once.
 
