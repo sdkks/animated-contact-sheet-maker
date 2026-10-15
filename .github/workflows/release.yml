@@ -149,22 +149,11 @@ jobs:
           body: |
             ## What's New
 
-            ### Added
-
-            - Read batch file lists from stdin using `-`, with LF/CRLF lines or `--null` / `-0` for NUL-separated paths.
-            - Use `--overwrite-existing` to regenerate exact output paths.
-
             ### Changed
 
-            - All rendering commands skip existing exact outputs by default instead of creating numbered duplicates.
-            - Screenshot batches resume missing images without changing their indices or sample times.
-            - Downloads cover Windows x64/ARM64 and Linux GNU/musl; macOS uses Cargo source installation.
-            - GNU Linux builds now use Ubuntu 26.04; the static musl build remains available for Alpine.
-
-            ### Fixed
-
-            - Final media files are prepared privately on the destination filesystem before publication, preserving previous outputs on pre-publication failures or cancellation.
-            - Partial screenshot failures report successfully published files and accurate completion counts.
+            - Windows and Linux release downloads are now per-platform ZIP archives containing the executable and required license notices.
+            - Individual `.sha256` files and `SHA256SUMS` verify the ZIP archives.
+            - Tagged releases run shared CI checks and all four builds, then publish automatically only after archive and checksum verification succeeds.
 
             ### Requirements
 

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-15
+
+### Changed
+
+- Windows and Linux release downloads are now per-platform ZIP archives containing the executable and required license notices.
+- Individual `.sha256` files and `SHA256SUMS` verify the ZIP archives.
+- Tagged releases run shared CI checks and all four builds, then publish automatically only after archive and checksum verification succeeds.
+
 ## [0.2.0] - 2026-10-15
 
 ### Added
@@ -33,6 +41,7 @@ The initial tag's release remained a draft. Earlier implementation history remai
 
 Repository: https://github.com/sdkks/animated-contact-sheet-maker
 
-[Unreleased]: https://github.com/sdkks/animated-contact-sheet-maker/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/sdkks/animated-contact-sheet-maker/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/sdkks/animated-contact-sheet-maker/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/sdkks/animated-contact-sheet-maker/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/sdkks/animated-contact-sheet-maker/tree/v0.1.0
