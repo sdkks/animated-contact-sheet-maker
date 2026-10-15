@@ -143,7 +143,8 @@ pub(crate) fn build_stitch_args(
 
     let mut args = crate::ffmpeg::base_args();
     for clip in clips {
-        args.extend(["-i".into(), clip.to_string_lossy().into_owned()]);
+        // Bound decoder buffers when many cached cells are opened together.
+        args.extend(["-threads:v".into(), "1".into(), "-i".into(), clip.to_string_lossy().into_owned()]);
     }
 
     let inputs_tag: String = (0..n).map(|i| format!("[{}:v]", i)).collect();
@@ -325,6 +326,34 @@ mod tests {
     }
 
     #[test]
+    fn stitch_args_limit_each_input_decoder_without_changing_output_options() {
+        for (cols, rows) in [(2, 1), (6, 3), (8, 4)] {
+            let layout = compute_sheet_layout(cols, rows, 1280, 8);
+            let clips: Vec<PathBuf> = (0..layout.total)
+                .map(|i| PathBuf::from(format!("cached cells/cell_{i}.mp4"))).collect();
+            for effort in [4, 1] {
+                let args = build_stitch_args(
+                    &clips, &layout, 80, 8, SheetTheme::Dark, None, 2, 12, 75, effort,
+                    Path::new("sheet.webp"),
+                );
+                let base = crate::ffmpeg::base_args();
+                assert_eq!(&args[..base.len()], &base);
+                let fc = args.iter().position(|arg| arg == "-filter_complex").unwrap();
+                let inputs = &args[base.len()..fc];
+                assert_eq!(inputs.len(), clips.len() * 4);
+                for (input, clip) in inputs.chunks_exact(4).zip(&clips) {
+                    assert_eq!(input, ["-threads:v", "1", "-i", clip.to_str().unwrap()]);
+                }
+                let effort_arg = effort.to_string();
+                assert_eq!(&args[fc + 2..], [
+                    "-map", "[grid]", "-c:v", "libwebp", "-loop", "0",
+                    "-quality", "75", "-compression_level", &effort_arg, "sheet.webp",
+                ]);
+            }
+        }
+    }
+
+    #[test]
     fn extract_args_shape() {
         let args = build_extract_args(
             Path::new("/v/movie.mkv"),
@@ -347,6 +376,15 @@ mod tests {
         assert!(args.windows(2).any(|w| w[0] == "-c:v" && w[1] == "libx264"));
         assert!(args.windows(2).any(|w| w[0] == "-pix_fmt" && w[1] == "yuv420p"));
         let vf_pos = args.iter().position(|a| a == "-vf").unwrap();
+        // Stitch decoder limits must not alter source decoding or clip encoding.
+        assert_eq!(&args[..vf_pos], [
+            "-hide_banner", "-loglevel", "error", "-y", "-ss", "12.500",
+            "-i", "/v/movie.mkv", "-map", "0:0", "-an", "-t", "2",
+        ]);
+        assert_eq!(&args[vf_pos + 2..], [
+            "-r", "12", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-pix_fmt", "yuv420p", "/tmp/cell.mp4",
+        ]);
         let vf = &args[vf_pos + 1];
         assert!(vf.contains("scale=320:180"));
         assert!(vf.contains("drawtext="));
@@ -402,10 +440,7 @@ mod tests {
         assert_eq!(args.iter().filter(|a| *a == "-i").count(), 4);
         let fc = args.iter().position(|a| a == "-filter_complex").unwrap();
         let graph = &args[fc + 1];
-        assert!(graph.contains("xstack=inputs=4:layout="));
-        assert!(graph.contains("pad="));
-        assert!(!graph.contains("vstack"));
-        assert!(!graph.contains("color=c=0x000000"));
+        assert_eq!(graph, "[0:v][1:v][2:v][3:v]xstack=inputs=4:layout=0_0|394_0|0_210|394_210[xs];[xs]pad=798:430:5:5:0x000000[grid]");
         let map_pos = args.iter().position(|a| a == "-map").unwrap();
         assert_eq!(args[map_pos + 1], "[grid]");
         assert!(args.windows(2).any(|w| w[0] == "-c:v" && w[1] == "libwebp"));
