@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-15
+
+### Added
+
+- `animated-sheet --compression-effort <0–6>` to control WebP encoder effort independently of quality. The default remains 4.
+- `[animated_sheet].compression_effort` configuration support, with explicit CLI values overriding valid config.
+
+Lower effort can encode faster, but may produce larger files and different decoded pixels.
+
 ## [0.2.1] - 2026-10-15
 
 ### Changed
@@ -41,7 +50,8 @@ The initial tag's release remained a draft. Earlier implementation history remai
 
 Repository: https://github.com/sdkks/animated-contact-sheet-maker
 
-[Unreleased]: https://github.com/sdkks/animated-contact-sheet-maker/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/sdkks/animated-contact-sheet-maker/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/sdkks/animated-contact-sheet-maker/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/sdkks/animated-contact-sheet-maker/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/sdkks/animated-contact-sheet-maker/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/sdkks/animated-contact-sheet-maker/tree/v0.1.0

@@ -149,11 +149,12 @@ jobs:
           body: |
             ## What's New
 
-            ### Changed
+            ### Added
 
-            - Windows and Linux release downloads are now per-platform ZIP archives containing the executable and required license notices.
-            - Individual `.sha256` files and `SHA256SUMS` verify the ZIP archives.
-            - Tagged releases run shared CI checks and all four builds, then publish automatically only after archive and checksum verification succeeds.
+            - `animated-sheet --compression-effort <0–6>` to control WebP encoder effort independently of quality. The default remains 4.
+            - `[animated_sheet].compression_effort` configuration support, with explicit CLI values overriding valid config.
+
+            Lower effort can encode faster, but may produce larger files and different decoded pixels.
 
             ### Requirements
 
