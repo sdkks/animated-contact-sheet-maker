@@ -341,8 +341,8 @@ mod tests {
                 let fc = args.iter().position(|arg| arg == "-filter_complex").unwrap();
                 let inputs = &args[base.len()..fc];
                 assert_eq!(inputs.len(), clips.len() * 4);
-                for (input, clip) in inputs.chunks_exact(4).zip(&clips) {
-                    assert_eq!(input, ["-threads:v", "1", "-i", clip.to_str().unwrap()]);
+                for (input, clip) in inputs.as_chunks::<4>().0.iter().zip(&clips) {
+                    assert_eq!(input, &["-threads:v", "1", "-i", clip.to_str().unwrap()]);
                 }
                 let effort_arg = effort.to_string();
                 assert_eq!(&args[fc + 2..], [
