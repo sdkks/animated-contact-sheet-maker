@@ -1,4 +1,7 @@
 # acsm
+<p align="center">
+<img width="256" height="256" alt="acms-logo" src="https://github.com/user-attachments/assets/d96e40a4-2d8d-4324-acdb-c896fe147dff" />
+</p>
 
 ACSM generates video contact sheets, screenshots, animated preview reels and animated contact sheets using local `ffmpeg` processes. This checkout is **CLI-only**: no desktop frontend, Tauri, updater, Node build step, GTK or WebKit is required.
 
