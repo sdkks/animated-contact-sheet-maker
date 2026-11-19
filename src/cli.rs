@@ -90,6 +90,12 @@ pub struct ScreenshotsArgs {
 #[derive(Parser)]
 #[command(about = "Generate a still contact sheet (grid of thumbnails)")]
 pub struct SheetArgs {
+    /// Choose the grid from each video's duration using [layout] in ~/.acsm.toml.
+    /// Trims default to 5s at each end, capped at a quarter of the duration.
+    /// Conflicts with --cols/--rows; explicit CLI grid flags override config auto=true.
+    /// Prints a plan to stderr unless --quiet is set.
+    #[arg(long, conflicts_with_all = ["cols", "rows"])]
+    pub auto: bool,
     /// Number of columns in the thumbnail grid.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=32))]
     pub cols: Option<u32>,

@@ -226,6 +226,147 @@ async fn auto_cancellation_preserves_destination_and_reaps_intermediates() {
     let path = root.path().to_path_buf(); root.close().unwrap(); assert!(!path.exists());
 }
 
+fn still_render(config: &Path, source: &Path, out: &Path, extra: &[&str]) -> std::process::Output {
+    command(config).args(["sheet", "--width", "320", "--gap", "4", "--format", "png", "--no-header", "--no-timestamps"])
+        .args(extra).arg("-o").arg(out).arg(source).assert().success().get_output().clone()
+}
+
+fn png_dimensions(path: &Path) -> (u32, u32) {
+    let bytes = fs::read(path).unwrap();
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+    (u32::from_be_bytes(bytes[16..20].try_into().unwrap()), u32::from_be_bytes(bytes[20..24].try_into().unwrap()))
+}
+
+#[test]
+fn still_auto_renders_centres_and_honours_mode_and_publication_policy() {
+    let root = TempDir::new().unwrap();
+    let config = root.path().join("config.toml");
+    // This legal stored grid is too narrow at 320px, but auto ignores it.
+    fs::write(&config, "[sheet]\nauto=true\ncols=32\nrows=32\n").unwrap();
+    let source = root.path().join("long.mp4");
+    fixture(&source, 45);
+    let out = root.path().join("out"); fs::create_dir(&out).unwrap();
+    let output = still_render(&config, &source, &out, &["--auto", "--verbose"]);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    eprintln!("Still 45-second acceptance render:\n{stderr}");
+    assert!(!stderr.contains("warning:"));
+    let line = stderr.lines().find(|l| l.contains(": plan · ")).unwrap();
+    let fields: Vec<_> = line.split(" · ").skip(1).collect();
+    let number = |s: &str| s.split_whitespace().next().unwrap().trim_end_matches('s').parse::<f64>().unwrap();
+    let grid: Vec<u32> = fields[1].split_whitespace().next().unwrap().split('x').map(|s| s.parse().unwrap()).collect();
+    assert_eq!((number(fields[0]), grid, number(fields[2]), number(fields[3])), (45., vec![3,3], 9., 35.));
+    let extracts: Vec<_> = stderr.lines().filter(|l| l.starts_with("+ ") && l.contains("thumb_") && !l.contains(" -framerate ")).collect();
+    assert_eq!(extracts.len(), 9);
+    let mut seeks: Vec<f64> = extracts.iter().map(|line| {
+        let args: Vec<_> = line.split_whitespace().collect();
+        assert_eq!(args[args.iter().position(|a| *a == "-map").unwrap() + 1], "0:0");
+        args[args.iter().position(|a| *a == "-ss").unwrap() + 1].parse().unwrap()
+    }).collect();
+    seeks.sort_by(f64::total_cmp);
+    for (i, seek) in seeks.iter().enumerate() {
+        assert!((seek - (5. + (i as f64 + 0.5) * 35. / 9.)).abs() <= 0.0005);
+    }
+    assert!(stderr.contains("tile=3x3:"));
+    assert!(stderr.find(": plan · ").unwrap() < stderr.find(" -hide_banner").unwrap());
+    let result = out.join("long_sheet.png");
+    assert_eq!(png_dimensions(&result), (316, 184));
+    let before = fs::read(&result).unwrap();
+    let skipped = still_render(&config, &source, &out, &["--auto", "--verbose"]);
+    assert!(!String::from_utf8_lossy(&skipped.stderr).contains(": plan · "));
+    assert!(!String::from_utf8_lossy(&skipped.stderr).contains("+ "));
+    assert_eq!(fs::read(&result).unwrap(), before);
+    // Input expansion requires an existing path; skip still precedes probing.
+    fs::rename(&source, root.path().join("saved.mp4")).unwrap();
+    fs::write(&source, b"not media").unwrap();
+    still_render(&config, &source, &out, &["--auto"]);
+    fs::rename(root.path().join("saved.mp4"), &source).unwrap();
+    let quiet = still_render(&config, &source, &out, &["--quiet", "--overwrite-existing"]);
+    assert!(quiet.stderr.is_empty());
+    assert_eq!(fs::read(&result).unwrap(), before);
+    for flag in ["--cols", "--rows"] {
+        fs::write(&config, "[sheet]\nauto=true\ncols=2\nrows=2\n").unwrap();
+        let output = still_render(&config, &source, &out, &[flag, "2", "--overwrite-existing"]);
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(": plan · "));
+        assert_eq!(png_dimensions(&result), (320, 184));
+    }
+    // Static 2x2 keeps the historical 9,18,27,36 second sampler.
+    let output = still_render(&config, &source, &out, &["--cols", "2", "--verbose", "--overwrite-existing"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for ts in ["9.000", "18.000", "27.000", "36.000"] { assert!(stderr.contains(&format!("-ss {ts} "))); }
+    fs::write(&config, "invalid TOML").unwrap();
+    for flag in ["--cols", "--rows"] {
+        let output = command(&config).args(["sheet", "missing.mp4", "--auto", flag, "3"])
+            .assert().code(2).get_output().clone();
+        assert!(String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("config parse failed"));
+    }
+    let path = root.path().to_path_buf(); root.close().unwrap(); assert!(!path.exists());
+}
+
+#[test]
+fn still_auto_accepts_more_than_64_cells_and_continues_after_narrow_grid() {
+    let root = TempDir::new().unwrap();
+    let config = root.path().join("config.toml");
+    fs::write(&config, "[layout]\nrules=[{cols=9,rows=8}]\n").unwrap();
+    let short = root.path().join("short.mp4"); fixture(&short, 3);
+    let out = root.path().join("out"); fs::create_dir(&out).unwrap();
+    let output = still_render(&config, &short, &out, &["--auto", "--verbose"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("tile=9x8:"));
+    assert_eq!(stderr.lines().filter(|l| l.starts_with("+ ") && l.contains("thumb_") && !l.contains(" -framerate ")).count(), 72);
+    assert_eq!(png_dimensions(&out.join("short_sheet.png")), (310, 164));
+    fs::write(&config, "[layout]\nrules=[{max_seconds=10,cols=2,rows=1},{cols=32,rows=1}]\n").unwrap();
+    let long = root.path().join("long.mp4"); fixture(&long, 45);
+    let output = command(&config).args(["sheet", "--auto", "--width", "320", "--gap", "8", "--no-header", "--no-timestamps", "--overwrite-existing", "-o"])
+        .arg(&out).arg(&long).arg(&short).assert().code(1).get_output().clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("too narrow"));
+    assert!(stderr.contains("1 done · 0 skipped · 1 failed"));
+    assert!(!out.join("long_sheet.png").exists());
+    assert_eq!(png_dimensions(&out.join("short_sheet.png")), (320, 98));
+    assert!(fs::read_dir(&out).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().starts_with(".acsm-")));
+    let path = root.path().to_path_buf(); root.close().unwrap(); assert!(!path.exists());
+}
+
+#[tokio::test]
+async fn still_auto_rejects_malformed_plans_before_spawn_and_cancels_without_publication() {
+    use acsm::{contact_sheet::{generate_auto, SheetOptions}, auto_layout::{resolve, LayoutTable}, jobs::{OutputPolicy, PipelineContext, ProgressReporter}};
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    let root = TempDir::new().unwrap();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.mp4");
+    let tools = acsm::ffmpeg_test_hook_locate().unwrap();
+    let info = acsm::ffmpeg_test_hook_probe(&tools, source.to_str().unwrap()).await.unwrap();
+    let plan = resolve(&LayoutTable {trim_start_secs: 5, trim_end_secs: 5, rules: acsm::defaults::layout::RULES.to_vec()}, info.sampling_duration_secs(), 320, 4, None).unwrap();
+    let opts = SheetOptions {cols: 32, rows: 32, width: 320, gap: 4, thumb_font_size: 14, header_font_size: 18,
+        show_timestamps: false, show_header: false, format: acsm::output_path::OutputFormat::Png, jpeg_quality: 92, suffix: String::new(), theme: Default::default()};
+    let out = root.path().join("sheet.png"); fs::write(&out, b"old destination").unwrap();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let emit = |_: u32, _: u32, _: &str| cancelled.store(true, Ordering::Relaxed);
+    let reporter = ProgressReporter {emit: &emit};
+    let mut ctx = PipelineContext {output_policy: OutputPolicy::OverwriteExisting, ffmpeg: Path::new("missing-ffmpeg"),
+        cancelled: cancelled.clone(), reporter: &reporter, has_zscale: false};
+    for case in 0..9 {
+        let mut bad = plan.clone();
+        match case {
+            0 => bad.cols = 0, 1 => bad.rows = 33, 2 => bad.cells += 1,
+            3 => { bad.centres.pop(); }, 4 => bad.centres[0] = f64::NAN,
+            5 => bad.centres[0] = -1., 6 => bad.centres[0] = info.sampling_duration_secs(),
+            7 => bad.duration_secs += 1., _ => bad.cols = 32,
+        }
+        let result = generate_auto(&source, &info, &out, &opts, &bad, Path::new("unused.ttf"), &ctx).await;
+        assert!(matches!(result, Err(acsm::ffmpeg::RunError::Invalid(_))), "{result:?}");
+    }
+    let mut estimated = info.clone(); estimated.duration_source = acsm::video_info::DurationSource::FrameCount;
+    let result = generate_auto(&source, &estimated, &out, &opts, &plan, Path::new("unused.ttf"), &ctx).await;
+    assert!(matches!(result, Err(acsm::ffmpeg::RunError::Invalid(ref e)) if e.contains("no timestamps to seek by")));
+    ctx.ffmpeg = &tools.ffmpeg;
+    let result = generate_auto(&source, &info, &out, &opts, &plan, Path::new("unused.ttf"), &ctx).await;
+    assert!(matches!(result, Err(acsm::ffmpeg::RunError::Killed)), "{result:?}");
+    assert_eq!(fs::read(&out).unwrap(), b"old destination");
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    let path = root.path().to_path_buf(); root.close().unwrap(); assert!(!path.exists());
+}
+
 #[test]
 fn invalid_setup_never_produces_outputs_and_warnings_are_live() {
     let root = TempDir::new().unwrap();

@@ -2,7 +2,7 @@ use crate::drawtext::{font_for_ffmpeg, format_hms_escaped, header_overlay, times
 use crate::ffmpeg::{run_batch_cancellable, run_cancellable, Need, RunError};
 use crate::header::build_header_lines;
 use crate::jobs::{move_into_place, PipelineContext, PublishOutcome};
-use crate::layout::{checked_sheet_layout, compute_sheet_layout, header_height, line_height, sample_timestamps, thumb_height};
+use crate::layout::{checked_sheet_layout, compute_sheet_layout, header_height, line_height, sample_timestamps, thumb_height, SheetLayout};
 use crate::output_path::{jpeg_qv, OutputFormat, SheetTheme};
 use crate::video_info::VideoInfo;
 use std::path::{Path, PathBuf};
@@ -52,6 +52,54 @@ pub async fn generate(
     info.require_seekable().map_err(RunError::Invalid)?;
     let layout = compute_sheet_layout(opts.cols, opts.rows, opts.width, opts.gap);
     let timestamps = sample_timestamps(info.sampling_duration_secs(), layout.total);
+    render(source, info, output_path, opts, font, ctx, Cells { layout, timestamps }).await
+}
+
+struct Cells {
+    layout: SheetLayout,
+    timestamps: Vec<f64>,
+}
+
+pub async fn generate_auto(
+    source: &Path,
+    info: &VideoInfo,
+    output_path: &Path,
+    opts: &SheetOptions,
+    plan: &crate::auto_layout::AutoPlan,
+    font: &Path,
+    ctx: &PipelineContext<'_>,
+) -> Result<PublishOutcome, RunError> {
+    info.require_seekable().map_err(RunError::Invalid)?;
+    let cells = auto_cells(info, opts, plan).map_err(RunError::Invalid)?;
+    render(source, info, output_path, opts, font, ctx, cells).await
+}
+
+fn auto_cells(info: &VideoInfo, opts: &SheetOptions, plan: &crate::auto_layout::AutoPlan) -> Result<Cells, String> {
+    if !(1..=32).contains(&plan.cols) || !(1..=32).contains(&plan.rows)
+        || plan.cells < crate::auto_layout::MIN_AUTO_CELLS
+        || plan.cols.checked_mul(plan.rows) != Some(plan.cells)
+        || plan.centres.len() != plan.cells as usize {
+        return Err("auto plan grid and cell counts are inconsistent".into());
+    }
+    let layout = checked_sheet_layout(plan.cols, plan.rows, opts.width, opts.gap)?;
+    let duration = info.sampling_duration_secs();
+    if !duration.is_finite() || duration <= 0.0 || plan.duration_secs != duration
+        || plan.centres.iter().any(|t| !t.is_finite() || *t < 0.0 || *t >= duration) {
+        return Err("auto plan centres must be finite and inside the selected video".into());
+    }
+    Ok(Cells { layout, timestamps: plan.centres.clone() })
+}
+
+async fn render(
+    source: &Path,
+    info: &VideoInfo,
+    output_path: &Path,
+    opts: &SheetOptions,
+    font: &Path,
+    ctx: &PipelineContext<'_>,
+    cells: Cells,
+) -> Result<PublishOutcome, RunError> {
+    let Cells { layout, timestamps } = cells;
     let tmp = TempDir::new()?;
     let width_digits = crate::layout::pad_width_for_count(layout.total);
 
@@ -112,7 +160,7 @@ pub async fn generate(
         "-i".into(), tile_input.to_string_lossy().into_owned(),
         "-vf".into(), format!(
             "tile={}x{}:margin={}:padding={}:color={}",
-            opts.cols, opts.rows, layout.gap, layout.gap, opts.theme.bg()
+            layout.cols, layout.rows, layout.gap, layout.gap, opts.theme.bg()
         ),
         "-frames:v".into(), "1".into(),
         grid.to_string_lossy().into_owned(),

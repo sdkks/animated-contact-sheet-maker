@@ -62,6 +62,8 @@ pub struct ScreenshotsCfg {
 #[allow(dead_code)]
 #[derive(Debug, Default, Deserialize)]
 pub struct SheetCfg {
+    #[serde(default)]
+    pub auto: Option<bool>,
     pub cols: Option<u32>,
     pub rows: Option<u32>,
     pub width: Option<u32>,
@@ -191,6 +193,7 @@ fn warn_unknown_keys(raw: &toml::Table, path: &Path) -> Vec<String> {
         (
             "sheet",
             &[
+                "auto",
                 "cols",
                 "rows",
                 "width",
@@ -276,8 +279,9 @@ fn template() -> &'static str {
         "# suffix = \"_screens_\"\n",
         "\n",
         "[sheet]\n",
-        "# cols = 3\n",
-        "# rows = 6\n",
+        "# cols = 3             # ignored in auto mode\n",
+        "# rows = 6             # ignored in auto mode\n",
+        "# auto = false         # duration-driven grid; CLI --cols/--rows override this\n",
         "# width = 1920\n",
         "# gap = 10\n",
         "# thumb_font = 18\n",
@@ -316,11 +320,12 @@ fn template() -> &'static str {
         "# suffix = \"_animated_sheet\"\n",
         "\n",
         "[layout]\n",
-        "# Duration-to-grid rules for animated-sheet --auto.\n",
+        "# Shared duration-to-grid rules for sheet and animated-sheet --auto.\n",
         "# Tightest ceiling >= video duration wins, regardless of rule order.\n",
         "# Exactly one rule without max_seconds catches all longer videos.\n",
         "# Custom rules replace the whole ladder; error rule numbers are 1-based.\n",
         "# Animated auto grids are limited to 64 cells per rule, table-wide.\n",
+        "# Still auto grids have no cell-count ceiling beyond 1..=32 per axis.\n",
         "# Each trim is capped at a quarter of the selected video's duration.\n",
         "# trim_start_secs = 5\n",
         "# trim_end_secs = 5\n",
