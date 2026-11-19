@@ -7,9 +7,9 @@ use crate::output_path::SheetTheme;
 use crate::video_info::VideoInfo;
 use std::path::{Path, PathBuf};
 
-/// ffmpeg's xstack requires at least 2 inputs and accepts up to 32
-/// (AV_FILTER_MAX_INPUTS in libavfilter). We fail fast outside this band
-/// rather than let ffmpeg error cryptically.
+/// xstack requires at least 2 inputs and accepts far more than 32.
+/// This static upper bound limits stitch memory (one decoder per cell),
+/// rather than reflecting an upstream filter limit.
 const MIN_CELLS: u32 = 2;
 const MAX_CELLS: u32 = 32;
 
@@ -48,6 +48,11 @@ impl AnimatedSheetOptions {
                 MIN_CELLS, MAX_CELLS, layout.total, self.cols, self.rows
             ));
         }
+        self.validate_common()
+    }
+
+    /// Non-grid checks also apply when the grid comes from an auto plan.
+    pub fn validate_common(&self) -> Result<(), String> {
         require_nonzero("clip length", self.clip_length_secs)?;
         require_nonzero("fps", self.fps)?;
         if self.compression_effort > 6 {
@@ -76,11 +81,12 @@ pub fn build_extract_args(
     source: &Path,
     video: &crate::video_info::VideoStream,
     timestamp: f64,
+    label_timestamp: f64,
     thumb_w: u32,
     thumb_h: u32,
     gap: u32,
     fps: u32,
-    clip_length_secs: u32,
+    clip_length_secs: f64,
     show_timestamps: bool,
     thumb_font_size: u32,
     theme: SheetTheme,
@@ -90,7 +96,7 @@ pub fn build_extract_args(
 ) -> Vec<String> {
     let scale = format!("scale={}:{}", thumb_w, thumb_h);
     let ts_filter = show_timestamps.then(|| timestamp_overlay(
-        &format_hms_escaped(timestamp),
+        &format_hms_escaped(label_timestamp),
         &font_for_ffmpeg(font),
         thumb_font_size,
         theme.fontcolor(),
@@ -100,12 +106,16 @@ pub fn build_extract_args(
         "pad={}:{}:{}:{}:{}",
         thumb_w + gap, thumb_h + gap, gap / 2, gap / 2, theme.bg()
     );
-    let vf = crate::ffmpeg::vf_chain(&[hdr_filter, Some(&scale), ts_filter.as_deref(), Some(&pad)]);
+    // Sub-frame auto cells still need one retained frame at the requested rate.
+    // Static clips are whole seconds, so their presentation timestamps stay unchanged.
+    let reset_pts = (clip_length_secs > 0.0 && clip_length_secs < 1.0 / f64::from(fps))
+        .then_some("setpts=PTS-STARTPTS");
+    let vf = crate::ffmpeg::vf_chain(&[hdr_filter, Some(&scale), ts_filter.as_deref(), Some(&pad), reset_pts]);
 
     let mut args = crate::ffmpeg::base_args();
     args.extend(crate::ffmpeg::seek_input_args_clip(source, timestamp, video));
     args.extend([
-        "-t".into(), format!("{}", clip_length_secs),
+        "-t".into(), crate::ffmpeg::format_seconds(clip_length_secs),
         "-vf".into(), vf,
         "-r".into(), format!("{}", fps),
     ]);
@@ -128,7 +138,7 @@ pub(crate) fn build_stitch_args(
     gap: u32,
     theme: SheetTheme,
     header: Option<&HeaderParams>,
-    clip_length_secs: u32,
+    clip_length_secs: f64,
     fps: u32,
     quality: u32,
     compression_effort: u32,
@@ -159,7 +169,7 @@ pub(crate) fn build_stitch_args(
         let hdr_draw = header_overlay(&h.textfiles, &h.font_ffmpeg, h.font_size, theme.fontcolor(), gap, h.line_h);
         graph.push_str(&format!(
             ";color=c={}:s={}x{}:d={}:r={},{}[hdr];[hdr][grid]vstack[out]",
-            bg, grid_w, h.height, clip_length_secs, fps, hdr_draw
+            bg, grid_w, h.height, crate::ffmpeg::format_seconds(clip_length_secs), fps, hdr_draw
         ));
         "[out]"
     } else {
@@ -190,7 +200,6 @@ pub async fn generate(
     info.require_seekable().map_err(RunError::Invalid)?;
     let layout = compute_sheet_layout(opts.cols, opts.rows, opts.width, opts.gap);
 
-    let thumb_h = thumb_height(layout.thumb_w, info.video.width, info.video.height);
     let timestamps = sample_clip_timestamps(info.sampling_duration_secs(), layout.total, opts.clip_length_secs as f64);
     if timestamps.is_empty() {
         return Err(RunError::Invalid(format!(
@@ -199,6 +208,84 @@ pub async fn generate(
         )));
     }
 
+    let clips = Clips { layout, labels: timestamps.clone(), timestamps, length: f64::from(opts.clip_length_secs) };
+    render(source, info, out, opts, font, ctx, clips).await
+}
+
+struct Clips {
+    layout: SheetLayout,
+    timestamps: Vec<f64>,
+    labels: Vec<f64>,
+    length: f64,
+}
+
+pub async fn generate_auto(
+    source: &Path,
+    info: &VideoInfo,
+    out: &Path,
+    opts: &AnimatedSheetOptions,
+    plan: &crate::auto_layout::AutoPlan,
+    font: &Path,
+    ctx: &PipelineContext<'_>,
+) -> Result<PublishOutcome, RunError> {
+    opts.validate_common().map_err(RunError::Invalid)?;
+    info.require_seekable().map_err(RunError::Invalid)?;
+    let clips = auto_clips(info, opts, plan).map_err(RunError::Invalid)?;
+    render(source, info, out, opts, font, ctx, clips).await
+}
+
+fn auto_clips(info: &VideoInfo, opts: &AnimatedSheetOptions, plan: &crate::auto_layout::AutoPlan) -> Result<Clips, String> {
+    use crate::auto_layout::{MIN_AUTO_CELLS, MAX_AUTO_CELLS};
+    if plan.cells > MAX_AUTO_CELLS {
+        return Err(format!("auto plan has {} cells ({}x{}), over the {MAX_AUTO_CELLS}-cell animated auto-layout limit", plan.cells, plan.cols, plan.rows));
+    }
+    if plan.cells < MIN_AUTO_CELLS || !(1..=32).contains(&plan.cols) || !(1..=32).contains(&plan.rows)
+        || plan.cols.checked_mul(plan.rows) != Some(plan.cells)
+        || plan.clip_starts.len() != plan.cells as usize || plan.centres.len() != plan.cells as usize {
+        return Err("auto plan grid and cell counts are inconsistent".into());
+    }
+    let length = plan.cell_length_secs.filter(|l| l.is_finite() && *l > 0.0)
+        .ok_or("auto plan cell length must be positive and finite")?;
+    let duration = info.sampling_duration_secs();
+    if !plan.duration_secs.is_finite() || plan.duration_secs <= 0.0 || plan.duration_secs != duration {
+        return Err("auto plan duration must be positive, finite and match the selected video".into());
+    }
+    let epsilon = (32.0 * f64::EPSILON * duration).max(1e-9);
+    let usable = duration - plan.trim_start_secs - plan.trim_end_secs;
+    if [plan.trim_start_secs, plan.trim_end_secs].iter().any(|t| !t.is_finite() || *t < 0.0 || *t > duration / 4.0)
+        || !plan.usable_secs.is_finite() || (plan.usable_secs - usable).abs() > epsilon
+        || !plan.segment_secs.is_finite() || plan.segment_secs <= 0.0
+        || (plan.segment_secs - usable / f64::from(plan.cells)).abs() > epsilon
+        || (length - plan.segment_secs.min(f64::from(opts.clip_length_secs))).abs() > epsilon
+        || plan.decoded_secs.is_none_or(|d| !d.is_finite() || (d - length * f64::from(plan.cells)).abs() > epsilon)
+        || plan.clip_starts.iter().enumerate().any(|(i, start)| {
+            let expected = plan.trim_start_secs + i as f64 * plan.segment_secs + (plan.segment_secs - length) / 2.0;
+            (start - expected).abs() > epsilon
+        }) {
+        return Err("auto plan segment geometry is inconsistent".into());
+    }
+    if length > f64::from(opts.clip_length_secs) || plan.clip_starts.iter().zip(&plan.centres).any(|(&start, &centre)| {
+        !start.is_finite() || !centre.is_finite() || start < 0.0 || start + length > duration + epsilon
+            || (start + length / 2.0 - centre).abs() > epsilon
+    }) || plan.clip_starts.windows(2).any(|pair| pair[0] + length > pair[1] + epsilon) {
+        return Err("auto plan cell spans are inconsistent or outside the selected video".into());
+    }
+    let layout = checked_sheet_layout(plan.cols, plan.rows, opts.width, opts.gap)?;
+    Ok(Clips { layout, timestamps: plan.clip_starts.clone(), labels: plan.centres.clone(), length })
+}
+
+async fn render(
+    source: &Path,
+    info: &VideoInfo,
+    out: &Path,
+    opts: &AnimatedSheetOptions,
+    font: &Path,
+    ctx: &PipelineContext<'_>,
+    cells: Clips,
+) -> Result<PublishOutcome, RunError> {
+    let layout = cells.layout;
+    let thumb_h = thumb_height(layout.thumb_w, info.video.width, info.video.height);
+    let timestamps = &cells.timestamps;
     let total_steps = layout.total + 1;
     let tmp = tempfile::TempDir::new()?;
 
@@ -209,8 +296,8 @@ pub async fn generate(
         let idx = (i as u32) + 1;
         let cell = tmp.path().join(format!("cell_{:03}.mp4", idx));
         let args = build_extract_args(
-            source, &info.video, *ts, layout.thumb_w, thumb_h, layout.gap, opts.fps,
-            opts.clip_length_secs, opts.show_timestamps, opts.thumb_font_size,
+            source, &info.video, *ts, cells.labels[i], layout.thumb_w, thumb_h, layout.gap, opts.fps,
+            cells.length, opts.show_timestamps, opts.thumb_font_size,
             opts.theme, font, &cell, hdr_filter.as_deref(),
         );
         batch.push(args);
@@ -249,7 +336,7 @@ pub async fn generate(
     let staged = tmp.path().join("sheet.webp");
     let args = build_stitch_args(
         &clips, &layout, thumb_h, layout.gap, opts.theme, header_params.as_ref(),
-        opts.clip_length_secs, opts.fps, opts.quality, opts.compression_effort, &staged,
+        cells.length, opts.fps, opts.quality, opts.compression_effort, &staged,
     );
     run_cancellable(ctx.ffmpeg, &args, ctx.cancelled.clone()).await?;
     move_into_place(&staged, out, ctx).await
@@ -312,7 +399,7 @@ mod tests {
         let mut reference = None;
         for effort in 0..=6 {
             let mut args = build_stitch_args(
-                &clips, &layout, 80, 8, SheetTheme::Dark, None, 1, 4, 75, effort,
+                &clips, &layout, 80, 8, SheetTheme::Dark, None, 1.0, 4, 75, effort,
                 Path::new("sheet.webp"),
             );
             let pos = args.iter().position(|arg| arg == "-compression_level").unwrap();
@@ -333,7 +420,7 @@ mod tests {
                 .map(|i| PathBuf::from(format!("cached cells/cell_{i}.mp4"))).collect();
             for effort in [4, 1] {
                 let args = build_stitch_args(
-                    &clips, &layout, 80, 8, SheetTheme::Dark, None, 2, 12, 75, effort,
+                    &clips, &layout, 80, 8, SheetTheme::Dark, None, 2.0, 12, 75, effort,
                     Path::new("sheet.webp"),
                 );
                 let base = crate::ffmpeg::base_args();
@@ -358,8 +445,8 @@ mod tests {
         let args = build_extract_args(
             Path::new("/v/movie.mkv"),
             &sample_info(60.0, 1920, 1080).video,
-            12.5,
-            320, 180, 10, 12, 2,
+            12.5, 12.5,
+            320, 180, 10, 12, 2.0,
             true, 18, SheetTheme::Dark,
             Path::new("/f/font.ttf"),
             Path::new("/tmp/cell.mp4"),
@@ -397,8 +484,8 @@ mod tests {
         let args = build_extract_args(
             Path::new("/v/movie.mkv"),
             &sample_info(60.0, 1920, 1080).video,
-            5.0,
-            320, 180, 10, 12, 2,
+            5.0, 5.0,
+            320, 180, 10, 12, 2.0,
             true, 18, SheetTheme::Light,
             Path::new("/f/font.ttf"),
             Path::new("/tmp/cell.mp4"),
@@ -415,8 +502,8 @@ mod tests {
         let args = build_extract_args(
             Path::new("/v/movie.mkv"),
             &sample_info(60.0, 1920, 1080).video,
-            5.0,
-            320, 180, 10, 12, 2,
+            5.0, 5.0,
+            320, 180, 10, 12, 2.0,
             false, 18, SheetTheme::Dark,
             Path::new("/f/font.ttf"),
             Path::new("/tmp/cell.mp4"),
@@ -433,7 +520,7 @@ mod tests {
         let layout = compute_sheet_layout(2, 2, 800, 10);
         let clips: Vec<PathBuf> = (0..4).map(|i| PathBuf::from(format!("/tmp/c{}.mp4", i))).collect();
         let args = build_stitch_args(
-            &clips, &layout, 200, 10, SheetTheme::Dark, None, 3, 12, 75, 4,
+            &clips, &layout, 200, 10, SheetTheme::Dark, None, 3.0, 12, 75, 4,
             Path::new("/out/sheet.webp"),
         );
         // 4 inputs
@@ -459,7 +546,7 @@ mod tests {
             font_ffmpeg: "/f/font.ttf".into(),
         };
         let args = build_stitch_args(
-            &clips, &layout, 200, 10, SheetTheme::Dark, Some(&header), 3, 12, 75, 4,
+            &clips, &layout, 200, 10, SheetTheme::Dark, Some(&header), 3.0, 12, 75, 4,
             Path::new("/out/sheet.webp"),
         );
         let fc = args.iter().position(|a| a == "-filter_complex").unwrap();
@@ -482,7 +569,7 @@ mod tests {
             font_ffmpeg: "/f.ttf".into(),
         };
         let args = build_stitch_args(
-            &clips, &layout, 200, 10, SheetTheme::Light, Some(&header), 3, 12, 75, 4,
+            &clips, &layout, 200, 10, SheetTheme::Light, Some(&header), 3.0, 12, 75, 4,
             Path::new("/out/sheet.webp"),
         );
         let fc = args.iter().position(|a| a == "-filter_complex").unwrap();
@@ -497,12 +584,105 @@ mod tests {
         let layout = compute_sheet_layout(3, 2, 900, 10);
         let clips: Vec<PathBuf> = (0..6).map(|i| PathBuf::from(format!("/tmp/c{}.mp4", i))).collect();
         let args = build_stitch_args(
-            &clips, &layout, 150, 10, SheetTheme::Dark, None, 2, 10, 75, 4,
+            &clips, &layout, 150, 10, SheetTheme::Dark, None, 2.0, 10, 75, 4,
             Path::new("/out/sheet.webp"),
         );
         let fc = args.iter().position(|a| a == "-filter_complex").unwrap();
         let graph = &args[fc + 1];
         assert!(graph.starts_with("[0:v][1:v][2:v][3:v][4:v][5:v]xstack=inputs=6:"));
+    }
+
+    #[test]
+    fn fractional_extract_keeps_selected_stream_seek_and_separate_label() {
+        let mut info = sample_info(45.0, 1920, 1080);
+        info.video.index = 2;
+        info.video.start_secs = 100.0;
+        info.video.seek_offset_secs = 7.0;
+        let args = build_extract_args(Path::new("source.mp4"), &info.video, 12.5, 13.0,
+            320, 180, 8, 12, 35.0 / 9.0, true, 14, SheetTheme::Dark,
+            Path::new("font.ttf"), Path::new("cell.mp4"), None);
+        assert!(args.windows(2).any(|w| w == ["-ss", "19.500"]));
+        assert!(args.windows(2).any(|w| w == ["-map", "0:2"]));
+        assert!(args.windows(2).any(|w| w == ["-t", "3.888889"]));
+        let vf = &args[args.iter().position(|a| a == "-vf").unwrap() + 1];
+        assert!(vf.contains(&format_hms_escaped(13.0)));
+        let layout = compute_sheet_layout(3, 3, 1280, 8);
+        let header = HeaderParams { textfiles: vec!["header.txt".into()], height: 40, line_h: 20, font_size: 18, font_ffmpeg: "font.ttf".into() };
+        let args = build_stitch_args(&["cell.mp4".into()], &layout, 180, 8, SheetTheme::Dark,
+            Some(&header), 35.0 / 9.0, 12, 75, 4, Path::new("sheet.webp"));
+        assert!(args.iter().any(|a| a.contains(":d=3.888889:r=12")));
+    }
+
+    #[test]
+    fn subframe_extract_resets_pts_only_below_one_output_frame() {
+        let mut info = sample_info(45.0, 1920, 1080);
+        info.video.index = 2;
+        info.video.start_secs = 100.0;
+        info.video.seek_offset_secs = 7.0;
+        for fps in [1, 12, 24] {
+            let frame = 1.0 / f64::from(fps);
+            let args_for = |length| build_extract_args(Path::new("source.mp4"), &info.video,
+                12.5, 13.0, 320, 180, 8, fps, length, true, 14, SheetTheme::Dark,
+                Path::new("font.ttf"), Path::new("cell.mp4"), Some("format=yuv420p"));
+            let normal = args_for(frame);
+            let vf_pos = normal.iter().position(|a| a == "-vf").unwrap() + 1;
+            assert!(!normal[vf_pos].contains("setpts"), "boundary uses normal path");
+            for length in [frame / 2.0, frame / 4.0, frame, frame * 2.0, 2.0] {
+                let mut args = args_for(length);
+                assert!(args.windows(2).any(|w| w == ["-ss", "19.500"]));
+                assert!(args.windows(2).any(|w| w == ["-map", "0:2"]));
+                assert!(args[vf_pos].contains(&format_hms_escaped(13.0)));
+                if length < frame {
+                    assert_eq!(args[vf_pos], format!("{},setpts=PTS-STARTPTS", normal[vf_pos]));
+                    args[vf_pos] = normal[vf_pos].clone();
+                } else {
+                    assert_eq!(args[vf_pos], normal[vf_pos]);
+                }
+                // Only the nominal duration and the conditional filter may differ.
+                let t = args.iter().position(|a| a == "-t").unwrap() + 1;
+                assert_eq!(args[t], crate::ffmpeg::format_seconds(length));
+                args[t] = normal[t].clone();
+                assert_eq!(args, normal);
+            }
+        }
+    }
+
+    #[test]
+    fn auto_consumption_validates_plan_not_ignored_options_grid() {
+        let mut info = sample_info(100.0, 1920, 1080);
+        info.video.duration_secs = Some(45.0);
+        let opts = AnimatedSheetOptions {
+            cols: 32, rows: 32, width: 1280, gap: 8,
+            clip_length_secs: 5, fps: 12, quality: 75, compression_effort: 4,
+            thumb_font_size: 14, header_font_size: 18, show_timestamps: true,
+            show_header: true, suffix: String::new(), theme: SheetTheme::Dark,
+        };
+        let table = crate::auto_layout::LayoutTable { trim_start_secs: 5, trim_end_secs: 5, rules: crate::defaults::layout::RULES.to_vec() };
+        let plan = crate::auto_layout::resolve(&table, info.sampling_duration_secs(), 1280, 8, Some(5.0)).unwrap();
+        let clips = auto_clips(&info, &opts, &plan).unwrap();
+        assert_eq!((clips.layout.cols, clips.layout.rows), (3, 3));
+        for (cols, rows) in [(4, 10), (8, 8)] {
+            let table = crate::auto_layout::LayoutTable { rules: vec![crate::auto_layout::LayoutRule {max_seconds: None, cols, rows}], ..table.clone() };
+            let p = crate::auto_layout::resolve(&table, 45.0, 1280, 8, Some(5.0)).unwrap();
+            assert_eq!(auto_clips(&info, &opts, &p).unwrap().layout.total, cols * rows);
+        }
+        let mut invalid = Vec::new();
+        let mut p = plan.clone(); p.cells = 128; p.cols = 16; p.rows = 8;
+        assert_eq!(auto_clips(&info, &opts, &p).err().unwrap(), "auto plan has 128 cells (16x8), over the 64-cell animated auto-layout limit");
+        let mut p = plan.clone(); p.cells = 8; invalid.push(p);
+        let mut p = plan.clone(); p.cols = 0; invalid.push(p);
+        let mut p = plan.clone(); p.centres.pop(); invalid.push(p);
+        let mut p = plan.clone(); p.clip_starts.pop(); invalid.push(p);
+        let mut p = plan.clone(); p.duration_secs = 100.0; invalid.push(p);
+        let mut p = plan.clone(); p.duration_secs = f64::NAN; invalid.push(p);
+        let mut p = plan.clone(); p.clip_starts[0] = -1.0; invalid.push(p);
+        let mut p = plan.clone(); p.centres[0] = f64::NAN; invalid.push(p);
+        let mut p = plan.clone(); p.segment_secs = 0.0; invalid.push(p);
+        let mut p = plan.clone(); p.decoded_secs = None; invalid.push(p);
+        for l in [None, Some(0.0), Some(f64::NAN), Some(f64::INFINITY)] {
+            let mut p = plan.clone(); p.cell_length_secs = l; invalid.push(p);
+        }
+        for p in invalid { assert!(auto_clips(&info, &opts, &p).is_err(), "accepted {p:?}"); }
     }
 
     fn invoke_generate_with_grid(cols: u32, rows: u32) -> Result<PublishOutcome, RunError> {

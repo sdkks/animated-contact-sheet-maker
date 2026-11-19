@@ -7,6 +7,11 @@ pub(crate) fn base_args() -> Vec<String> {
     BASE_ARGS.iter().map(|s| s.to_string()).collect()
 }
 
+/// Keep static integer arguments identical while retaining fractional cell lengths.
+pub(crate) fn format_seconds(value: f64) -> String {
+    if value.fract() == 0.0 { format!("{value:.0}") } else { format!("{value:.6}") }
+}
+
 /// Join a list of optional filter components into a single `-vf` value,
 /// dropping `None`s. Empty input yields an empty string; callers decide
 /// whether to emit `-vf` at all based on the result.

@@ -9,4 +9,5 @@ pub mod screenshots;
 pub mod sheet;
 pub mod reel;
 pub mod animated_sheet;
+mod plan;
 pub mod suffix;

@@ -42,6 +42,23 @@ pub mod animated_sheet {
     pub const THEME: &str = "dark";
 }
 
+pub mod layout {
+    use crate::auto_layout::LayoutRule;
+    pub const TRIM_START_SECS: u32 = 5;
+    pub const TRIM_END_SECS: u32 = 5;
+    pub const RULES: &[LayoutRule] = &[
+        LayoutRule { max_seconds: Some(10), cols: 3, rows: 1 },
+        LayoutRule { max_seconds: Some(30), cols: 3, rows: 2 },
+        LayoutRule { max_seconds: Some(120), cols: 3, rows: 3 },
+        LayoutRule { max_seconds: Some(480), cols: 3, rows: 4 },
+        LayoutRule { max_seconds: Some(1200), cols: 3, rows: 5 },
+        LayoutRule { max_seconds: Some(2100), cols: 3, rows: 6 },
+        LayoutRule { max_seconds: Some(3000), cols: 3, rows: 7 },
+        LayoutRule { max_seconds: Some(3600), cols: 3, rows: 8 },
+        LayoutRule { max_seconds: None, cols: 4, rows: 10 },
+    ];
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,7 +5,8 @@ use crate::font;
 use crate::progress::Reporter;
 use crate::run::{format::{resolve_bool, resolve_theme}, inputs};
 use acsm::{
-    animated_sheet::{generate, AnimatedSheetOptions},
+    animated_sheet::{generate, generate_auto, AnimatedSheetOptions},
+    auto_layout,
     defaults,
     ffmpeg::{RunError},
     ffmpeg_test_hook_locate, ffmpeg_test_hook_probe,
@@ -16,6 +17,14 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 pub async fn run(args: AnimatedSheetArgs, cfg: &Config) -> i32 {
+    let auto = args.cols.is_none() && args.rows.is_none()
+        && (args.auto || cfg.animated_sheet.auto.unwrap_or(false));
+    let table = auto.then(|| cfg.layout_table());
+    if let Some(table) = &table
+        && let Err(e) = auto_layout::validate_animated_table(table) {
+        eprintln!("{e}");
+        return 2;
+    }
     let tools = match ffmpeg_test_hook_locate() {
         Ok(t) => t,
         Err(e) => { eprintln!("{e}"); crate::hints::print_tool_install_hint(); return 2; }
@@ -64,7 +73,8 @@ pub async fn run(args: AnimatedSheetArgs, cfg: &Config) -> i32 {
         theme:            resolve_theme(&args.theme, cfg.animated_sheet.theme.as_deref(), defaults::animated_sheet::THEME),
     };
 
-    if let Err(e) = opts.validate().and_then(|()| caps.require(&tools.ffmpeg, &opts.needs())) {
+    let validation = if auto { opts.validate_common() } else { opts.validate() };
+    if let Err(e) = validation.and_then(|()| caps.require(&tools.ffmpeg, &opts.needs())) {
         eprintln!("{e}");
         return 2;
     }
@@ -92,6 +102,17 @@ pub async fn run(args: AnimatedSheetArgs, cfg: &Config) -> i32 {
             Ok(v) => v,
             Err(e) => { eprintln!("{}: {e}", src.display()); failed += 1; continue; }
         };
+        let plan = if let Some(table) = &table {
+            match info.require_seekable().and_then(|()| auto_layout::resolve(
+                table, info.sampling_duration_secs(), opts.width, opts.gap, Some(f64::from(opts.clip_length_secs)),
+            )) {
+                Ok(plan) => {
+                    if !args.shared.quiet { reporter.message(&super::plan::plan_line(src, &plan)); }
+                    Some(plan)
+                }
+                Err(e) => { eprintln!("{}: {e}", src.display()); failed += 1; continue; }
+            }
+        } else { None };
         let ctx = PipelineContext {
             output_policy,
             ffmpeg: &tools.ffmpeg,
@@ -99,7 +120,11 @@ pub async fn run(args: AnimatedSheetArgs, cfg: &Config) -> i32 {
             reporter: &pr,
             has_zscale,
         };
-        match generate(src, &info, &out_path, &opts, &font_path, &ctx).await {
+        let result = match &plan {
+            Some(plan) => generate_auto(src, &info, &out_path, &opts, plan, &font_path, &ctx).await,
+            None => generate(src, &info, &out_path, &opts, &font_path, &ctx).await,
+        };
+        match result {
             Ok(PublishOutcome::Written) => { println!("{}", out_path.display()); done += 1; }
             Ok(PublishOutcome::Skipped) => { skipped += 1; }
             Err(RunError::Killed) => { cancelled.store(true, std::sync::atomic::Ordering::Relaxed); }

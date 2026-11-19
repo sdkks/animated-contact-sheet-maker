@@ -11,6 +11,7 @@ pub mod contact_sheet;
 pub mod screenshots;
 pub mod preview_reel;
 pub mod animated_sheet;
+pub mod auto_layout;
 pub mod jobs;
 mod probe;
 
