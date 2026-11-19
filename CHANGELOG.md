@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- `sheet --auto` and `animated-sheet --auto` choose per-video grids from shared `[layout]` duration rules, with configurable trims and independent config defaults for each command. Custom rules replace the built-in ladder.
+- Auto layouts sample segment centres for still sheets and centre length-capped clips for animated sheets. A plan is reported on stderr after probing and before extraction, unless quiet or skipped. Very short animated cells may contain one frame, and an all-single-frame result may be a still WebP.
+
+### Fixed
+
+- Activated the previously dormant warnings for unknown configuration sections and keys. Existing typos that were silently ignored now produce warnings on stderr; those settings remain ignored, and the warnings are not fatal. Unknown keys inside the new `layout.rules` entries are errors instead.
+
 ## [0.3.1] - 2026-10-15
 
 ### Changed

@@ -87,6 +87,60 @@ cargo run --locked -- sheet movie.mkv
 
 Successfully published output paths go to **stdout**; progress, errors and run summaries go to **stderr**. Use `--quiet` to suppress progress and summaries (not errors or produced paths), or `--verbose` to inspect ffmpeg arguments. Summary counts refer to input videos; screenshots also report images produced/skipped per video. Each subcommand's `--help` lists its options.
 
+### Duration-driven grids
+
+Use `--auto` to choose a grid separately for each video, for either still or animated contact sheets:
+
+```sh
+acsm sheet movie.mkv --auto
+acsm animated-sheet movie.mkv --auto --clip-length 5
+```
+
+Both commands use the same `[layout]` rules. Matching uses the full selected video stream's duration, not the trimmed span or requested clip length. The smallest `max_seconds` greater than or equal to that duration wins, regardless of rule order; exactly one rule must omit `max_seconds` to cover longer videos.
+
+The built-in rules are:
+
+| Maximum video duration (seconds) | Grid (columns × rows) |
+|---|---|
+| 10 | 3 × 1 |
+| 30 | 3 × 2 |
+| 120 | 3 × 3 |
+| 480 | 3 × 4 |
+| 1200 | 3 × 5 |
+| 2100 | 3 × 6 |
+| 3000 | 3 × 7 |
+| 3600 | 3 × 8 |
+| Longer videos | 4 × 10 |
+
+Auto mode trims 5 seconds from each end by default, with each trim capped independently at a quarter of the video duration. It divides the remaining span into equal segments, one per cell. `sheet` captures each segment's centre. `animated-sheet` centres a clip in each segment, with nominal length equal to the smaller of `--clip-length` and the segment length; timestamp overlays label the segment centres.
+
+For a 45-second video with the built-in rules and trims, both commands choose nine cells in a 3 × 3 grid over a 35-second usable span. With `--clip-length 5`, each animated cell is nominally 35/9 ≈ 3.89 seconds. These are planned source spans, not exact rendered durations: seeking and output frame cadence introduce rounding. Very short cells may contain only one output frame; if every cell has one frame, the WebP may be still rather than animated.
+
+To enable auto mode by default for both commands and replace the rule ladder, add or edit these sections in `~/.acsm.toml` (or the file selected by `ACSM_CONFIG`):
+
+```toml
+[sheet]
+auto = true
+
+[animated_sheet]
+auto = true
+
+[layout]
+trim_start_secs = 5
+trim_end_secs = 5
+rules = [
+  { max_seconds = 30, cols = 3, rows = 2 },
+  { max_seconds = 120, cols = 3, rows = 3 },
+  { cols = 4, rows = 10 }, # catch-all
+]
+```
+
+Custom `rules` replace the entire built-in ladder, not just matching entries. Omitted trim keys retain their defaults; setting only trims keeps the built-in rules. Rules accept only `max_seconds`, `cols` and `rows`, not per-rule FPS or clip lengths. Unknown keys inside a rule are errors. Each axis must be 1–32 and each rule must provide at least two cells. Animated auto mode additionally requires every rule to fit within 64 cells, including rules not matched by the current inputs; still auto mode has no additional cell-count ceiling. The selected grid must also fit the requested width and gap for each file. Static animated grids retain their existing 2–32-cell limit.
+
+Auto mode is off unless requested by CLI or config. CLI `--auto` conflicts with `--cols` or `--rows`. Either explicit CLI grid flag disables config-enabled auto mode for that invocation; otherwise auto mode ignores valid stored `cols` and `rows`. Configuration is validated before overrides, so invalid numeric values must still be corrected. Existing config files are not rewritten.
+
+For each auto-mode file to be rendered, a plan appears on stderr after probing and before extraction. It reports the duration, grid and cell count, plus the usable span for still sheets or nominal cell length and total planned clip coverage for animated sheets. This does not provide feedback during probing. No plan is printed with `--quiet`, for skipped outputs or in static mode. Output names, stdout paths and the existing skip/overwrite policy are unchanged.
+
 ### Animated-sheet compression effort
 
 `animated-sheet --compression-effort` accepts integers from 0 to 6. The default is 4 when neither CLI nor config sets it; 0 is the lowest effort, not automatic. Effort is independent of `--quality`, FPS and dimensions. Lower effort can encode faster, but may produce larger files and different decoded pixels; it does not promise equivalent image quality or a fixed whole-job speedup.
