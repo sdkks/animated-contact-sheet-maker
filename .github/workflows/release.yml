@@ -147,27 +147,54 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: "ACSM ${{ github.ref_name }}"
           body: |
-            ## What's New
+            ## What’s New
 
-            ### Changed
+            ### Added
 
-            - Animated-sheet stitching now requests one video decoder thread per cached clip to reduce memory overhead. Quality, compression effort, and animation settings are unchanged.
+            - `sheet --auto` and `animated-sheet --auto` choose per-video grids from shared `[layout]` duration rules, with independent config defaults for each command.
+            - Shared configurable trims default to five seconds per end, each capped at one quarter of the selected video’s duration. Custom rules replace the built-in ladder entirely.
+            - Auto layouts sample segment centres for still sheets and centre length-capped clips for animated sheets. Explicit CLI grid flags override config-enabled auto mode; CLI `--auto` conflicts with `--cols` and `--rows`.
+            - A per-file plan is reported on stderr after probing and before extraction, unless quiet or skipped.
+            - Very short animated auto cells may contain one frame; an all-single-frame result may be a still WebP.
+
+            ### Fixed
+
+            - Activated previously dormant warnings for unknown configuration sections and keys. Existing typos that were silently ignored now produce warnings on stderr; those settings remain ignored, and the warnings are not fatal. Unknown keys inside the new `layout.rules` entries are errors instead.
 
             ### Requirements
 
-            Install **ffmpeg** (including ffprobe) and **MediaInfo CLI** separately: `brew install ffmpeg-full mediainfo` (macOS), `winget install Gyan.FFmpeg MediaArea.MediaInfo` (Windows), or `apt install ffmpeg mediainfo` (Linux).
+            Install **ffmpeg** (including ffprobe) and **MediaInfo CLI** separately:
+
+            - macOS: `brew install ffmpeg-full mediainfo`
+            - Windows: `winget install Gyan.FFmpeg MediaArea.MediaInfo`
+            - Linux: `apt install ffmpeg mediainfo`
 
             ### Downloads and verification
 
-            Download one of the four ZIP archives: `acsm-windows-x86_64.zip`, `acsm-windows-aarch64.zip`, `acsm-linux-x86_64.zip` (GNU), or `acsm-linux-x86_64-musl.zip` (static musl, for Alpine and other musl systems). Each contains `acsm` or `acsm.exe`, `LICENSE`, and `FONT-LICENSE`. Verify the ZIP against its `.zip.sha256` companion or `SHA256SUMS` before extracting and installing the binary. Media tools remain separate runtime prerequisites (`apk add ffmpeg mediainfo` on Alpine). Configuration uses `~/.acsm.toml` (override with `ACSM_CONFIG`).
+            Download one of the four ZIP archives:
 
-            macOS is source-only: install Rust stable and a platform C linker, then run `cargo install --path . --locked` from the repository root, or `cargo install --git https://github.com/sdkks/animated-contact-sheet-maker.git --locked acsm`. No macOS binary is built by CI or attached to releases.
+            - `acsm-windows-x86_64.zip`
+            - `acsm-windows-aarch64.zip`
+            - `acsm-linux-x86_64.zip` — GNU
+            - `acsm-linux-x86_64-musl.zip` — static musl, for Alpine and other musl systems
+
+            Each contains `acsm` or `acsm.exe`, `LICENSE`, and `FONT-LICENSE`. Verify the ZIP against its `.zip.sha256` companion or `SHA256SUMS` before extracting and installing the binary.
+
+            Media tools remain separate runtime prerequisites (`apk add ffmpeg mediainfo` on Alpine). Configuration uses `~/.acsm.toml`, overridden with `ACSM_CONFIG`.
+
+            macOS is source-only. Install Rust stable and a platform C linker, then run `cargo install --path . --locked` from the repository root, or:
+
+            ```sh
+            cargo install --git https://github.com/sdkks/animated-contact-sheet-maker.git --locked acsm
+            ```
+
+            No macOS binary is built by CI or attached to releases.
 
             ### Notes
 
             Windows CLI builds are unsigned; SmartScreen may warn on first run.
 
-            ACSM is MIT-licensed (`LICENSE`). The embedded DejaVu Sans font retains its Bitstream/Arev notices in `FONT-LICENSE` (also `assets/fonts/LICENSE` in the source).
+            ACSM is MIT-licensed (`LICENSE`). The embedded DejaVu Sans font retains its Bitstream/Arev notices in `FONT-LICENSE` and `assets/fonts/LICENSE` in the source.
           draft: true
           prerelease: false
           fail_on_unmatched_files: true

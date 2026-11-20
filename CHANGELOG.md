@@ -2,14 +2,19 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-20
+
 ### Added
 
-- `sheet --auto` and `animated-sheet --auto` choose per-video grids from shared `[layout]` duration rules, with configurable trims and independent config defaults for each command. Custom rules replace the built-in ladder.
-- Auto layouts sample segment centres for still sheets and centre length-capped clips for animated sheets. A plan is reported on stderr after probing and before extraction, unless quiet or skipped. Very short animated cells may contain one frame, and an all-single-frame result may be a still WebP.
+- `sheet --auto` and `animated-sheet --auto` choose per-video grids from shared `[layout]` duration rules, with independent config defaults for each command.
+- Shared configurable trims default to five seconds per end, each capped at one quarter of the selected video’s duration. Custom rules replace the built-in ladder entirely.
+- Auto layouts sample segment centres for still sheets and centre length-capped clips for animated sheets. Explicit CLI grid flags override config-enabled auto mode; CLI `--auto` conflicts with `--cols` and `--rows`.
+- A per-file plan is reported on stderr after probing and before extraction, unless quiet or skipped.
+- Very short animated auto cells may contain one frame; an all-single-frame result may be a still WebP.
 
 ### Fixed
 
-- Activated the previously dormant warnings for unknown configuration sections and keys. Existing typos that were silently ignored now produce warnings on stderr; those settings remain ignored, and the warnings are not fatal. Unknown keys inside the new `layout.rules` entries are errors instead.
+- Activated previously dormant warnings for unknown configuration sections and keys. Existing typos that were silently ignored now produce warnings on stderr; those settings remain ignored, and the warnings are not fatal. Unknown keys inside the new `layout.rules` entries are errors instead.
 
 ## [0.3.1] - 2026-10-15
 
@@ -65,7 +70,8 @@ The initial tag's release remained a draft. Earlier implementation history remai
 
 Repository: https://github.com/sdkks/animated-contact-sheet-maker
 
-[Unreleased]: https://github.com/sdkks/animated-contact-sheet-maker/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/sdkks/animated-contact-sheet-maker/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/sdkks/animated-contact-sheet-maker/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/sdkks/animated-contact-sheet-maker/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/sdkks/animated-contact-sheet-maker/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/sdkks/animated-contact-sheet-maker/compare/v0.2.0...v0.2.1
