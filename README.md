@@ -1,8 +1,17 @@
 # acsm
+<p align="center">
+<img width="256" height="256" alt="acms-logo" src="https://github.com/user-attachments/assets/d96e40a4-2d8d-4324-acdb-c896fe147dff" />
+</p>
 
 ACSM generates video contact sheets, screenshots, animated preview reels and animated contact sheets using local `ffmpeg` processes. This checkout is a **CLI-only** Rust application built with Cargo.
 
 Repository: https://github.com/sdkks/animated-contact-sheet-maker. Version 0.1.0 starts this CLI-only project's release line; earlier implementation history remains in Git. Original copyright and permission notices are preserved in [LICENSE](LICENSE).
+
+## Example Animated Contact Sheet
+
+<img width="1280" height="662" alt="CHARGE - Blender Open Movie  UXqq0ZvbOnk _animated_sheet" src="https://github.com/user-attachments/assets/cde5eb36-c7e2-47cd-8633-93e713f9d8ef" />
+
+Credit: [CHARGE - Blender Open Movie](https://youtu.be/UXqq0ZvbOnk)
 
 ## Outputs
 
